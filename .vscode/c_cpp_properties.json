@@ -1,0 +1,15 @@
+{
+    "configurations": [
+        {
+            "name": "MFOES02W",
+            "compileCommands": "${workspaceFolder}/compile_commands.json",
+            "includePath": [
+                "${workspaceFolder}/libs/libgfx",
+                "${workspaceFolder}/include"
+            ],
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-x64"
+        }
+    ],
+    "version": 4
+}
