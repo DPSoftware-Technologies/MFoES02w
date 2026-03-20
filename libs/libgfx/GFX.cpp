@@ -853,7 +853,11 @@ static const uint8_t s_font[] = {
 };
 
 // ─── Text rendering ───────────────────────────────────────────────────────────
+#define GFX_TRANSPARENT 0xFFFF  // put this in your header
+
 void LinuxGFX::drawChar(int16_t x,int16_t y,unsigned char c,uint16_t color,uint16_t bg,uint8_t sx,uint8_t sy){
+    bool transBg = (bg == GFX_TRANSPARENT);
+
     if (!m_pFont) {
         if (x>=m_width||y>=m_height||(x+6*sx-1)<0||(y+8*sy-1)<0) return;
         if (c<32||c>126) c='?';
@@ -862,14 +866,23 @@ void LinuxGFX::drawChar(int16_t x,int16_t y,unsigned char c,uint16_t color,uint1
         for (int8_t col=0;col<5;col++) {
             uint8_t bits=glyph[col];
             for (int8_t row=0;row<8;row++,bits>>=1) {
-                uint16_t px=(bits&1)?color:bg;
-                if (sx==1&&sy==1) writePixel(x+col,y+row,px);
-                else writeFillRect(x+col*sx,y+row*sy,sx,sy,px);
+                if (bits&1) {
+                    // always draw foreground
+                    if (sx==1&&sy==1) writePixel(x+col,y+row,color);
+                    else writeFillRect(x+col*sx,y+row*sy,sx,sy,color);
+                } else if (!transBg) {
+                    // only draw background if not transparent
+                    if (sx==1&&sy==1) writePixel(x+col,y+row,bg);
+                    else writeFillRect(x+col*sx,y+row*sy,sx,sy,bg);
+                }
             }
         }
-        for (int8_t row=0;row<8;row++) {
-            if(sx==1&&sy==1)writePixel(x+5,y+row,bg);
-            else writeFillRect(x+5*sx,y+row*sy,sx,sy,bg);
+        // column 6 spacing — skip entirely if transparent
+        if (!transBg) {
+            for (int8_t row=0;row<8;row++) {
+                if(sx==1&&sy==1) writePixel(x+5,y+row,bg);
+                else writeFillRect(x+5*sx,y+row*sy,sx,sy,bg);
+            }
         }
         endWrite();
     } else {
@@ -888,6 +901,7 @@ void LinuxGFX::drawChar(int16_t x,int16_t y,unsigned char c,uint16_t color,uint1
                     if(sx==1&&sy==1) writePixel(gx+gx2,gy+gy2,color);
                     else writeFillRect(gx+gx2*sx,gy+gy2*sy,sx,sy,color);
                 }
+                // custom font path never drew bg anyway — no change needed
                 bits8<<=1;
             }
         endWrite();
@@ -914,7 +928,7 @@ void LinuxGFX::writeText(const char *text) {
 
 void LinuxGFX::setFont      (const GFXfont *f)       { m_pFont=f; }
 void LinuxGFX::setCursor    (int16_t x,int16_t y)    { m_cursorX=x; m_cursorY=y; }
-void LinuxGFX::setTextColor (uint16_t c)              { m_textColor=c; m_textBgColor=c; }
+void LinuxGFX::setTextColor (uint16_t c)              { m_textColor=c; m_textBgColor=GFX_TRANSPARENT; }
 void LinuxGFX::setTextColor (uint16_t c,uint16_t bg)  { m_textColor=c; m_textBgColor=bg; }
 void LinuxGFX::setTextSize  (uint8_t s)               { m_textSizeX=m_textSizeY=s?s:1; }
 void LinuxGFX::setTextSize  (uint8_t sx,uint8_t sy)   { m_textSizeX=sx?sx:1; m_textSizeY=sy?sy:1; }

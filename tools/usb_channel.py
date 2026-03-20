@@ -251,7 +251,7 @@ class UsbChannelManager:
         if self._ep_out is None:
             return False
         frame = encode_frame(channel, flags, payload)
-        print(f"[debug] sending frame ch={channel} flags={flags} len={len(frame)} to ep={self._ep_out.bEndpointAddress:#04x}")  # ADD THIS
+        print(f"[debug] sending frame ch={channel} flags={flags} len={len(frame)} to ep={self._ep_out.bEndpointAddress:#04x}")
         with self._tx_lock:
             try:
                 for i in range(0, len(frame), USB_BUF_SIZE):

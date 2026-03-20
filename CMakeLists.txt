@@ -34,6 +34,7 @@ endif()
 
 # ── Compiler flags ────────────────────────────────────────────────────────────
 add_compile_options(
+    -w
     -Wall
     -Wextra
     -Wpedantic
@@ -53,12 +54,15 @@ endif()
 # --------------library--------------------
 
 add_subdirectory(libs/libgfx)
-
+add_subdirectory(libs/hwinterface)
+add_subdirectory(libs/uisys)
 
 
 # ── Subdirectories ────────────────────────────────────────────────────────────
 add_executable(mfoes02w
     src/main.cpp
+    src/usb_handling.cpp
+    src/ui.cpp
     src/app.cpp
 )
 
@@ -74,6 +78,8 @@ target_link_libraries(mfoes02w
         Threads::Threads
         libgfx
         pthread
+        hwinterface 
+        uisys 
 )
 
 

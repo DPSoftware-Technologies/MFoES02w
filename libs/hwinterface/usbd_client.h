@@ -17,7 +17,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/socket.h>
-#include <sys/select.h>   // ← add this
+#include <sys/select.h>
 #include <sys/un.h>
 #include <endian.h>
 

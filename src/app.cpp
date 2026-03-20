@@ -1,5 +1,4 @@
 #include "app.h"
-#include <unistd.h>
 #include <cstdio>
 #include <cstring>
 #include <pthread.h>
@@ -7,14 +6,12 @@
 #define RECV_BUF_SIZE (1 + FRAME_SIZE)
 
 App::App()
-#ifdef GFX_USE_OPENGL_ES
-    :   gfx("/dev/dri/card0"),
-#else
     :   gfx("/dev/fb0"),
-#endif
         i2c("/dev/i2c-1"),
-        adc(i2c, 0x48),
-        frameReady(false)
+        frameReady(false),
+        touch(i2c, 17, 27),  // int_pin=17, rst_pin=27
+        buz(4, true),
+        ui(0, 400, 1280, 320, uisys::Font::Medium())
 {
     pthread_mutex_init(&frameMutex, nullptr);
     memset(frameBufA, 0, sizeof(frameBufA));
@@ -25,96 +22,73 @@ App::~App() {
     pthread_mutex_destroy(&frameMutex);
 }
 
-void* App::usbThreadFunc(void* arg) {
-    static_cast<App*>(arg)->usbLoop();
-    return nullptr;
-}
-
-void App::usbLoop() {
-    // DTS tile buffer: header + one tile
-    uint32_t tile_buf_size = sizeof(TileUpdateHeader) + DTS_TILE_SIZE;
-    uint8_t *buf = new uint8_t[tile_buf_size];
-
-    while (true) {
-        if (!usbdc.open(USBD_CHAN_AUTO)) {
-            snprintf(statusMsg, sizeof(statusMsg), "USB: waiting...");
-            sleep(2);
-            continue;
-        }
-        snprintf(statusMsg, sizeof(statusMsg),
-                 "USB: ch%d connected", usbdc.get_channel());
-
-        while (usbdc.is_connected()) {
-            int p = usbdc.poll(100);
-            if (p <= 0) continue;
-
-            ssize_t r = usbdc.recv(buf, tile_buf_size);
-            if (r < 1) break;
-
-            if (buf[0] == MSG_TILE_UPDATE) {
-                TileUpdateHeader *hdr = (TileUpdateHeader*)buf;
-                uint8_t  tx = hdr->tx;
-                uint8_t  ty = hdr->ty;
-                uint16_t tw = hdr->tw;
-                uint16_t th = hdr->th;
-
-                if (tx >= DTS_TILES_X || ty >= DTS_TILES_Y) continue;
-                uint32_t expected = sizeof(TileUpdateHeader) + tw * th * 2;
-                if ((uint32_t)r != expected) continue;
-
-                uint16_t *pixels = (uint16_t*)(buf + sizeof(TileUpdateHeader));
-                int x0 = tx * tw;
-                int y0 = ty * th;
-
-                pthread_mutex_lock(&frameMutex);
-                for (int row = 0; row < th; row++) {
-                    memcpy(
-                        &frameBufA[(y0 + row) * SCREEN_W + x0],
-                        &pixels[row * tw],
-                        tw * 2
-                    );
-                }
-                frameReady = true;
-                pthread_mutex_unlock(&frameMutex);
-                snprintf(statusMsg, sizeof(statusMsg), "DTS streaming");
-            }
-        }
-
-        // Clear on disconnect
-        pthread_mutex_lock(&frameMutex);
-        memset(frameBufA, 0, FRAME_SIZE);
-        frameReady = false;
-        pthread_mutex_unlock(&frameMutex);
-
-        snprintf(statusMsg, sizeof(statusMsg), "USB: disconnected, retrying...");
-        usbdc.close();
-        sleep(1);
-    }
-
-    delete[] buf;
-}
-
 void App::init() {
-#ifndef GFX_USE_OPENGL_ES
     gfx.enableMultiBuffer(2);
-#endif
     gfx.fillScreen(0x0000);
     gfx.swapBuffers();
 
     // Start USB in background, don't block init
     snprintf(statusMsg, sizeof(statusMsg), "USB: starting...");
     pthread_create(&usb_thread, nullptr, App::usbThreadFunc, this);
+
+    GTConfig* cfg = touch.readConfig();
+    if (cfg) {
+        cfg->xResolution = 1280;
+        cfg->yResolution = 720;
+        touch.writeConfig();  // writes checksum + triggers update
+    }
+
+    touch.setMoveThreshold(1);    // px — tune to your screen
+    touch.setHoldDuration(500);   // ms
+
+    touch.onPress([this](const TouchEventData& e) {
+        pthread_mutex_lock(&frameMutex);
+        snprintf(statusMsg, sizeof(statusMsg), "Touch: press at (%d, %d)", e.point.x, e.point.y);
+        pthread_mutex_unlock(&frameMutex);
+
+        std::lock_guard<std::mutex> lock(touchQueueMutex);
+        touchQueue.push(e);  // ← queue for main thread to draw
+    });
+
+    touch.onMove([this](const TouchEventData& e) {
+        std::lock_guard<std::mutex> lock(touchQueueMutex);
+        touchQueue.push(e);
+    });
+
+    touch.onRelease([this](const TouchEventData& e) {
+        pthread_mutex_lock(&frameMutex);
+        snprintf(statusMsg, sizeof(statusMsg), "Touch: release at (%d, %d)", e.point.x, e.point.y);
+        pthread_mutex_unlock(&frameMutex);
+
+        std::lock_guard<std::mutex> lock(touchQueueMutex);
+        touchQueue.push(e); 
+    });
+
+    touch.onHold([this](const TouchEventData& e) {
+        pthread_mutex_lock(&frameMutex);
+        snprintf(statusMsg, sizeof(statusMsg), "Touch: hold at (%d, %d)", e.point.x, e.point.y);
+        pthread_mutex_unlock(&frameMutex);
+
+        std::lock_guard<std::mutex> lock(touchQueueMutex);
+        touchQueue.push(e); 
+    });
+
+    // init UI
+    initSysUI();
+    initSidebarBTNs();
+    initDemoUI();
 }
 
 int App::run() {
+    touch.startPolling();
+
     int sw = gfx.width();
     int sh = gfx.height();
 
     while (true) {
+        // pull frame from USB thread
         pthread_mutex_lock(&frameMutex);
-        if (frameReady) {
-            memcpy(frameBufB, frameBufA, FRAME_SIZE);
-        }
+        if (frameReady) memcpy(frameBufB, frameBufA, FRAME_SIZE);
         bool hasFrame = frameReady;
         pthread_mutex_unlock(&frameMutex);
 
@@ -124,13 +98,46 @@ int App::run() {
             gfx.drawRGBBitmap(ox, oy, frameBufB, SCREEN_W, SCREEN_H);
         } else {
             gfx.fillScreen(0x0000);
-            gfx.setCursor(10, 10);
-            gfx.setTextColor(gfx.color565(0xFF, 0xFF, 0xFF), gfx.color565(0x00, 0x00, 0x00));
-            gfx.writeText(statusMsg);
+        }
+        // draw status
+        gfx.setCursor(10, 10);
+        gfx.setTextColor(
+            gfx.color565(0xFF, 0xFF, 0xFF),
+            gfx.color565(0x00, 0x00, 0x00)
+        );
+        gfx.setTextSize(1);
+        pthread_mutex_lock(&frameMutex);
+        gfx.writeText(statusMsg);
+        pthread_mutex_unlock(&frameMutex);
+
+        std::lock_guard<std::mutex> lock(touchQueueMutex);
+        while (!touchQueue.empty()) {
+            TouchEventData e = touchQueue.front();
+            touchQueue.pop();
+
+            switch (e.event) {
+                case TouchEvent::PRESS:
+                    gfx.drawCircle(e.point.x, e.point.y, 20, gfx.color565(0xFF, 0x00, 0x00));
+                    break;
+                case TouchEvent::MOVE:
+                    gfx.fillCircle(e.point.x, e.point.y, 5, gfx.color565(0x00, 0xFF, 0x00));
+                    break;
+                case TouchEvent::HOLD:
+                    gfx.drawCircle(e.point.x, e.point.y, 40, gfx.color565(0xFF, 0xFF, 0x00));
+                    break;
+                case TouchEvent::RELEASE:
+                    break;
+            }
+            ui.handleEvent(e);
+        }
+        if (!hide_ui) {
+            ui.draw(gfx);
         }
 
+        if (show_about) {renderAbout(sw, sh);}
+
         gfx.swapBuffers();
-        usleep(16000);
+        usleep(16000); // ~60 FPS
     }
     return 0;
 }
