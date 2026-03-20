@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""
+ttf_to_adafruit.py — Convert a TTF/OTF font to an Adafruit GFX C header.
+
+Requires: freetype-py  (pip install freetype-py)
+
+Usage:
+    python3 ttf_to_adafruit.py <font.ttf> [options]
+
+Options:
+    -s, --size   <px>         Pixel height to render at         (default: 16)
+    -f, --first  <code>       First Unicode codepoint to include (default: 0x20)
+    -l, --last   <code>       Last  Unicode codepoint to include (default: 0x7E)
+    -n, --name   <identifier> C variable name prefix             (default: derived from filename)
+    -o, --output <file>       Output file (default: stdout)
+
+Examples:
+    python3 ttf_to_adafruit.py MyFont.ttf -s 12
+    python3 ttf_to_adafruit.py MyFont.ttf -s 24 -n MyFont24 -o MyFont24.h
+    python3 ttf_to_adafruit.py MyFont.ttf -s 16 -f 0x20 -l 0xFF -o out.h
+"""
+
+import sys
+import os
+import re
+import argparse
+import datetime
+
+try:
+    import freetype
+except ImportError:
+    print("ERROR: freetype-py is not installed. Run:  pip install freetype-py", file=sys.stderr)
+    sys.exit(1)
+
+def parse_codepoint(s):
+    return int(s, 0)
+
+
+def safe_identifier(path):
+    name = os.path.splitext(os.path.basename(path))[0]
+    name = re.sub(r'[^A-Za-z0-9_]', '_', name)
+    if name and name[0].isdigit():
+        name = '_' + name
+    return name
+
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description='Convert a TTF/OTF font file to an Adafruit GFX C font header.')
+    p.add_argument('font',           help='Path to .ttf or .otf font file')
+    p.add_argument('-s', '--size',   type=int,            default=16,
+                   help='Render height in pixels (default: 16)')
+    p.add_argument('-f', '--first',  type=parse_codepoint, default=0x20,
+                   help='First Unicode codepoint (default: 0x20 = space)')
+    p.add_argument('-l', '--last',   type=parse_codepoint, default=0x7E,
+                   help='Last Unicode codepoint  (default: 0x7E = ~)')
+    p.add_argument('-n', '--name',   type=str,            default=None,
+                   help='C identifier prefix (default: derived from filename)')
+    p.add_argument('-o', '--output', type=str,            default=None,
+                   help='Output file path (default: stdout)')
+    return p.parse_args()
+
+def render_font(font_path, size_px, first_code, last_code):
+    face = freetype.Face(font_path)
+    face.set_pixel_sizes(0, size_px)
+
+    # y_advance: use face metrics (in 26.6 fixed-point, shift right 6)
+    y_advance = face.size.height >> 6
+    if y_advance == 0:
+        y_advance = size_px  # fallback
+
+    bitmaps       = []
+    glyphs        = []
+    bitmap_offset = 0
+
+    for code in range(first_code, last_code + 1):
+        # Check whether the font has a glyph for this codepoint
+        glyph_index = face.get_char_index(code)
+
+        if glyph_index == 0:
+            # No glyph — emit a zero-size placeholder that still advances
+            # the cursor so character indices stay correct.
+            face.load_char(ord(' '),
+                           freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_MONO)
+            xa = face.glyph.advance.x >> 6
+            glyphs.append((bitmap_offset, 0, 0, xa, 0, 0, code, chr(code)))
+            continue
+
+        face.load_glyph(glyph_index,
+                        freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_MONO)
+        slot = face.glyph
+        bm   = slot.bitmap
+
+        w  = bm.width          # glyph bitmap width  in pixels
+        h  = bm.rows           # glyph bitmap height in pixels
+        xo = slot.bitmap_left  # x offset: pen → left edge of bitmap
+        yo = -slot.bitmap_top
+        xa = slot.advance.x >> 6  # horizontal advance in pixels
+        packed       = []
+        acc          = 0
+        bits_in_acc  = 0
+
+        for row in range(h):
+            for col in range(w):
+                byte_idx = row * bm.pitch + (col >> 3)
+                bit      = (bm.buffer[byte_idx] >> (7 - (col & 7))) & 1
+                acc      = (acc << 1) | bit
+                bits_in_acc += 1
+                if bits_in_acc == 8:
+                    packed.append(acc)
+                    acc         = 0
+                    bits_in_acc = 0
+
+        if bits_in_acc:                          # flush remaining bits
+            packed.append(acc << (8 - bits_in_acc))
+
+        bitmaps.extend(packed)
+        glyphs.append((bitmap_offset, w, h, xa, xo, yo, code, chr(code)))
+        bitmap_offset += len(packed)
+
+    return bitmaps, glyphs, y_advance
+
+def generate_header(bitmaps, glyphs, y_advance, name, first_code, last_code,
+                    font_path, size_px):
+    lines = []
+    now   = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+
+    guard = name.upper() + '_H'
+    lines.append(f'#pragma once')
+    lines.append(f'#include "GFX.h"')
+    lines.append(f'')
+    lines.append(f'// {name} font')
+    lines.append(f'// Generated by ttf_to_adafruit.py on {now}')
+    lines.append(f'// Source : {os.path.basename(font_path)}')
+    lines.append(f'// Size   : {size_px}px')
+    lines.append(f'// Range  : 0x{first_code:02X} ({chr(first_code)}) to 0x{last_code:02X} ({chr(last_code)})')
+    lines.append(f'')
+
+    # ---- Bitmap array -------------------------------------------------------
+    lines.append(f'const uint8_t {name}Bitmaps[] = {{')
+
+    COLS = 16  # bytes per printed row
+    for i in range(0, len(bitmaps), COLS):
+        chunk = bitmaps[i:i + COLS]
+        hex_str = ', '.join(f'0x{b:02X}' for b in chunk)
+        lines.append(f'    {hex_str},')
+
+    lines.append('};')
+    lines.append('')
+
+    lines.append(f'const GFXglyph {name}Glyphs[] = {{')
+    lines.append(f'    // bitmapOffset, width, height, xAdvance, xOffset, yOffset')
+
+    for (offset, w, h, xa, xo, yo, code, ch) in glyphs:
+        safe_ch = repr(ch) if (0x20 <= code <= 0x7E) else f'U+{code:04X}'
+        lines.append(
+            f'    {{{offset:5d}, {w:3d}, {h:3d}, {xa:3d}, {xo:4d}, {yo:4d}}},'
+            f'  // 0x{code:02X} {safe_ch}'
+        )
+
+    lines.append('};')
+    lines.append('')
+
+    total_bytes = len(bitmaps) + len(glyphs) * 7 + 6  # rough estimate
+    lines.append(f'const GFXfont {name} = {{')
+    lines.append(f'    (uint8_t  *){name}Bitmaps,')
+    lines.append(f'    (GFXglyph *){name}Glyphs,')
+    lines.append(f'    0x{first_code:02X},   // first codepoint')
+    lines.append(f'    0x{last_code:02X},   // last  codepoint')
+    lines.append(f'    {y_advance}     // y advance (line height)')
+    lines.append('};')
+    lines.append('')
+    lines.append(f'// Approx. {total_bytes} bytes')
+    lines.append('')
+
+    return '\n'.join(lines)
+
+def main():
+    args = parse_args()
+
+    if not os.path.isfile(args.font):
+        print(f"ERROR: Font file not found: {args.font}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.first > args.last:
+        print("ERROR: --first must be <= --last", file=sys.stderr)
+        sys.exit(1)
+
+    name = args.name if args.name else safe_identifier(args.font)
+
+    print(f"Rendering '{os.path.basename(args.font)}' at {args.size}px, "
+          f"codepoints 0x{args.first:02X}–0x{args.last:02X}, "
+          f"name='{name}' ...",
+          file=sys.stderr)
+
+    try:
+        bitmaps, glyphs, y_advance = render_font(
+            args.font, args.size, args.first, args.last)
+    except freetype.ft_errors.FT_Exception as e:
+        print(f"ERROR: FreeType failed to load '{args.font}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+    header = generate_header(
+        bitmaps, glyphs, y_advance, name,
+        args.first, args.last, args.font, args.size)
+
+    if args.output:
+        with open(args.output, 'w') as f:
+            f.write(header)
+        print(f"Written to '{args.output}'  "
+              f"({len(bitmaps)} bitmap bytes, {len(glyphs)} glyphs)",
+              file=sys.stderr)
+    else:
+        print(header)
+
+
+if __name__ == '__main__':
+    main()

@@ -1,7 +1,8 @@
 #include "app.h"
 #include <iostream>
 #include <unistd.h>
-#include "GaugeWidget.h"
+#include <cmath>
+#include <pthread.h>
 
 
 App::App()
@@ -17,6 +18,40 @@ App::App()
 
 App::~App() {} // Destructor (if needed)
 
+void* App::usbThreadFunc(void* arg) {
+    static_cast<App*>(arg)->usbLoop();
+    return nullptr;
+}
+
+void App::usbLoop() {
+    while (true) {
+        if (!usbdc.open(USBD_CHAN_AUTO)) {
+            snprintf(statusMsg, sizeof(statusMsg), "USB: waiting for usbd...");
+            sleep(2);
+            continue;
+        }
+        snprintf(statusMsg, sizeof(statusMsg), "USB: ch%d connected", usbdc.get_channel());
+
+        uint8_t buf[512];
+        while (usbdc.is_connected()) {
+            int p = usbdc.poll(100);
+            if (p <= 0) continue;
+            ssize_t r = usbdc.recv(buf, sizeof(buf));
+            if (r < 0) break;
+
+            // Update display
+            snprintf(statusMsg, sizeof(statusMsg), "USB rx: %.*s", (int)r, buf);
+
+            // Echo back so PC gets a reply ← ADD THIS
+            usbdc.send(buf, (uint32_t)r);
+        }
+
+        snprintf(statusMsg, sizeof(statusMsg), "USB: disconnected, retrying...");
+        usbdc.close();
+        sleep(1);
+    }
+}
+
 void App::init() {
 // Multi-buffering is only supported in OpenGL ES back-end
 #ifndef GFX_USE_OPENGL_ES
@@ -25,6 +60,10 @@ void App::init() {
     // Clear screen to black
     gfx.fillScreen(0x0000); 
     gfx.swapBuffers();
+
+    // Start USB in background, don't block init
+    snprintf(statusMsg, sizeof(statusMsg), "USB: starting...");
+    pthread_create(&usb_thread, nullptr, App::usbThreadFunc, this);
 }
 
 void App::drawGauge(int x, int y, int r, float value, float minVal, float maxVal) {
@@ -64,6 +103,10 @@ int App::run() {
         snprintf(buf, sizeof(buf), "%.3f V", ch0);
         gfx.setCursor(210, 210);
         gfx.writeText(buf);
+
+        // show last status message from usbd client
+        gfx.setCursor(10, 10);
+        gfx.writeText(statusMsg);
 
         gfx.swapBuffers();
         usleep(50000); // 50ms for smoother updates

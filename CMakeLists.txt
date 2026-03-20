@@ -55,6 +55,7 @@ endif()
 add_subdirectory(libs/libgfx)
 
 
+
 # ── Subdirectories ────────────────────────────────────────────────────────────
 add_executable(mfoes02w
     src/main.cpp
@@ -72,6 +73,7 @@ target_link_libraries(mfoes02w
     PRIVATE
         Threads::Threads
         libgfx
+        pthread
 )
 
 
