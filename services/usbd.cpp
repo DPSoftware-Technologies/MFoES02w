@@ -23,9 +23,9 @@
 #define FFS_PATH        "/dev/ffs-mfoes"
 #define SOCK_PATH       "/var/run/usbd.sock"
 #define MAX_CHANNELS    32
-#define MAX_FRAME_SIZE  (512 * 1024)   // 512 KB max payload per frame
-#define USB_BUF_SIZE    (64 * 1024)    // 64 KB USB read/write buffer
-#define RING_SIZE       (4 * 1024 * 1024) // 4 MB per channel ring buffer
+#define MAX_FRAME_SIZE  (4 * 1024 * 1024)  // 4MB limit — just a check, no allocation
+#define USB_BUF_SIZE    (64 * 1024)         // 64KB — stack buffer, MUST stay small
+#define RING_SIZE       (16 * 1024 * 1024)  // 16MB — heap allocated, fine
 
 #define FRAME_MAGIC     0x4D554244u    // "MUBD"
 #define FLAG_DATA       0x00
@@ -354,9 +354,12 @@ static void *channel_rx_thread(void *arg) {
     delete (RxThreadArg*)arg;
     Channel &ch = channels[cid];
 
-    // IPC protocol to app:
-    //   [4B len][payload]  for each chunk delivered
-    uint8_t rxbuf[USB_BUF_SIZE];
+    // Heap allocated — large frames won't fit on stack
+    uint8_t *rxbuf = (uint8_t*)malloc(MAX_FRAME_SIZE);
+    if (!rxbuf) {
+        fprintf(stderr, "[ch%d] malloc rxbuf failed\n", cid);
+        return nullptr;
+    }
 
     while (g_running && ch.active) {
         pthread_mutex_lock(&ch.rx_ring.lock);
@@ -364,16 +367,29 @@ static void *channel_rx_thread(void *arg) {
             pthread_cond_wait(&ch.rx_ring.cond, &ch.rx_ring.lock);
         pthread_mutex_unlock(&ch.rx_ring.lock);
 
-        // Peek length prefix written by USB RX dispatcher
         uint32_t plen = 0;
         if (!ch.rx_ring.read_exact((uint8_t*)&plen, 4, 200)) continue;
         plen = le32toh(plen);
-        if (plen == 0 || plen > USB_BUF_SIZE) {
-            fprintf(stderr, "[ch%d] bad rx plen=%u\n", cid, plen);
+
+        if (plen == 0 || plen > (uint32_t)MAX_FRAME_SIZE) {
+            fprintf(stderr, "[ch%d] bad rx plen=%u, draining\n", cid, plen);
+            // Drain so ring doesn't get stuck
+            uint8_t trash[256];
+            uint32_t skip = plen;
+            while (skip > 0 && ch.active) {
+                uint32_t n = skip < sizeof(trash) ? skip : sizeof(trash);
+                if (!ch.rx_ring.read_exact(trash, n, 100)) break;
+                skip -= n;
+            }
             continue;
         }
-        if (!ch.rx_ring.read_exact(rxbuf, plen, 1000)) continue;
-		fprintf(stderr, "[ch%d] usb->app plen=%u\n", cid, plen);  // ← ADD HERE
+
+        if (!ch.rx_ring.read_exact(rxbuf, plen, 5000)) {
+            fprintf(stderr, "[ch%d] rx_ring read timeout plen=%u\n", cid, plen);
+            continue;
+        }
+
+        fprintf(stderr, "[ch%d] usb->app plen=%u\n", cid, plen);
 
         // Forward to app socket: [4B len][data]
         pthread_mutex_lock(&ch.sock_lock);
@@ -383,6 +399,7 @@ static void *channel_rx_thread(void *arg) {
         pthread_mutex_unlock(&ch.sock_lock);
     }
 
+    free(rxbuf);
     return nullptr;
 }
 
@@ -433,8 +450,16 @@ done:
 static void *usb_rx_thread(void *) {
     fprintf(stderr, "[usb_rx] thread started\n");
 
-    uint8_t *reassembly = (uint8_t*)malloc(MAX_FRAME_SIZE + sizeof(FrameHeader));
-    if (!reassembly) { perror("malloc"); return nullptr; }
+    // Reassembly buffer on heap — 4MB for large frames
+    const size_t REASSEMBLY_MAX = MAX_FRAME_SIZE + sizeof(FrameHeader);
+    uint8_t *reassembly = (uint8_t*)malloc(REASSEMBLY_MAX);
+    if (!reassembly) { perror("malloc reassembly"); return nullptr; }
+
+    // Separate small read buffer — kernel allocates DMA for THIS size only
+    const size_t READ_CHUNK = 512 * 1024;  // 512KB max per read() call
+    uint8_t *readbuf = (uint8_t*)malloc(READ_CHUNK);
+    if (!readbuf) { perror("malloc readbuf"); free(reassembly); return nullptr; }
+
     size_t reassembly_len = 0;
 
     while (g_running) {
@@ -445,31 +470,37 @@ static void *usb_rx_thread(void *) {
         int p = poll(&pfd, 1, 500);
         if (p <= 0) continue;
 
-        // Read one USB packet
-        ssize_t r = read(efd, reassembly + reassembly_len,
-                         MAX_FRAME_SIZE + sizeof(FrameHeader) - reassembly_len);
+        // Read into small readbuf — limits kernel DMA allocation
+        ssize_t r = read(efd, readbuf, READ_CHUNK);
         if (r <= 0) { usleep(1000); continue; }
-        reassembly_len += r;
-        fprintf(stderr, "[usb_rx] +%zd bytes, total=%zu\n", r, reassembly_len);
 
-        // Process all complete frames in buffer
+        // Copy into reassembly buffer
+        if (reassembly_len + r > REASSEMBLY_MAX) {
+            fprintf(stderr, "[usb_rx] reassembly overflow, resetting\n");
+            reassembly_len = 0;
+        }
+        memcpy(reassembly + reassembly_len, readbuf, r);
+        reassembly_len += r;
+        fprintf(stderr, "[usb_rx] +%zd bytes total=%zu\n", r, reassembly_len);
+
+        // Process complete frames
         size_t consumed = 0;
         while (consumed + sizeof(FrameHeader) <= reassembly_len) {
             FrameHeader *hdr = (FrameHeader*)(reassembly + consumed);
             if (le32toh(hdr->magic) != FRAME_MAGIC) {
-                fprintf(stderr, "[usb_rx] bad magic, skipping byte\n");
                 consumed++;
                 continue;
             }
             uint32_t plen = le32toh(hdr->length);
             size_t total_needed = sizeof(FrameHeader) + plen;
-            if (consumed + total_needed > reassembly_len) break; // wait for more
+            if (consumed + total_needed > reassembly_len) break;
 
-            uint8_t  cid  = hdr->channel;
-            uint8_t  flag = hdr->flags;
+            uint8_t  cid     = hdr->channel;
+            uint8_t  flag    = hdr->flags;
             uint8_t *payload = reassembly + consumed + sizeof(FrameHeader);
 
-            fprintf(stderr, "[usb_rx] frame ch=%d flags=%d plen=%u\n", cid, flag, plen);
+            fprintf(stderr, "[usb_rx] frame ch=%d flags=%d plen=%u\n",
+                    cid, flag, plen);
 
             pthread_mutex_lock(&channels_lock);
             bool active = channels[cid].active;
@@ -488,7 +519,6 @@ static void *usb_rx_thread(void *) {
             consumed += total_needed;
         }
 
-        // Shift unconsumed data to front
         if (consumed > 0) {
             reassembly_len -= consumed;
             if (reassembly_len > 0)
@@ -497,6 +527,7 @@ static void *usb_rx_thread(void *) {
     }
 
     free(reassembly);
+    free(readbuf);
     return nullptr;
 }
 

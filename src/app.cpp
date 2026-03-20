@@ -1,9 +1,10 @@
 #include "app.h"
-#include <iostream>
 #include <unistd.h>
-#include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <pthread.h>
 
+#define RECV_BUF_SIZE (1 + FRAME_SIZE)
 
 App::App()
 #ifdef GFX_USE_OPENGL_ES
@@ -12,11 +13,17 @@ App::App()
     :   gfx("/dev/fb0"),
 #endif
         i2c("/dev/i2c-1"),
-        adc(i2c, 0x48)
+        adc(i2c, 0x48),
+        frameReady(false)
 {
+    pthread_mutex_init(&frameMutex, nullptr);
+    memset(frameBufA, 0, sizeof(frameBufA));
+    memset(frameBufB, 0, sizeof(frameBufB));
 }
 
-App::~App() {} // Destructor (if needed)
+App::~App() {
+    pthread_mutex_destroy(&frameMutex);
+}
 
 void* App::usbThreadFunc(void* arg) {
     static_cast<App*>(arg)->usbLoop();
@@ -24,41 +31,74 @@ void* App::usbThreadFunc(void* arg) {
 }
 
 void App::usbLoop() {
+    // DTS tile buffer: header + one tile
+    uint32_t tile_buf_size = sizeof(TileUpdateHeader) + DTS_TILE_SIZE;
+    uint8_t *buf = new uint8_t[tile_buf_size];
+
     while (true) {
         if (!usbdc.open(USBD_CHAN_AUTO)) {
-            snprintf(statusMsg, sizeof(statusMsg), "USB: waiting for usbd...");
+            snprintf(statusMsg, sizeof(statusMsg), "USB: waiting...");
             sleep(2);
             continue;
         }
-        snprintf(statusMsg, sizeof(statusMsg), "USB: ch%d connected", usbdc.get_channel());
+        snprintf(statusMsg, sizeof(statusMsg),
+                 "USB: ch%d connected", usbdc.get_channel());
 
-        uint8_t buf[512];
         while (usbdc.is_connected()) {
             int p = usbdc.poll(100);
             if (p <= 0) continue;
-            ssize_t r = usbdc.recv(buf, sizeof(buf));
-            if (r < 0) break;
 
-            // Update display
-            snprintf(statusMsg, sizeof(statusMsg), "USB rx: %.*s", (int)r, buf);
+            ssize_t r = usbdc.recv(buf, tile_buf_size);
+            if (r < 1) break;
 
-            // Echo back so PC gets a reply ← ADD THIS
-            usbdc.send(buf, (uint32_t)r);
+            if (buf[0] == MSG_TILE_UPDATE) {
+                TileUpdateHeader *hdr = (TileUpdateHeader*)buf;
+                uint8_t  tx = hdr->tx;
+                uint8_t  ty = hdr->ty;
+                uint16_t tw = hdr->tw;
+                uint16_t th = hdr->th;
+
+                if (tx >= DTS_TILES_X || ty >= DTS_TILES_Y) continue;
+                uint32_t expected = sizeof(TileUpdateHeader) + tw * th * 2;
+                if ((uint32_t)r != expected) continue;
+
+                uint16_t *pixels = (uint16_t*)(buf + sizeof(TileUpdateHeader));
+                int x0 = tx * tw;
+                int y0 = ty * th;
+
+                pthread_mutex_lock(&frameMutex);
+                for (int row = 0; row < th; row++) {
+                    memcpy(
+                        &frameBufA[(y0 + row) * SCREEN_W + x0],
+                        &pixels[row * tw],
+                        tw * 2
+                    );
+                }
+                frameReady = true;
+                pthread_mutex_unlock(&frameMutex);
+                snprintf(statusMsg, sizeof(statusMsg), "DTS streaming");
+            }
         }
+
+        // Clear on disconnect
+        pthread_mutex_lock(&frameMutex);
+        memset(frameBufA, 0, FRAME_SIZE);
+        frameReady = false;
+        pthread_mutex_unlock(&frameMutex);
 
         snprintf(statusMsg, sizeof(statusMsg), "USB: disconnected, retrying...");
         usbdc.close();
         sleep(1);
     }
+
+    delete[] buf;
 }
 
 void App::init() {
-// Multi-buffering is only supported in OpenGL ES back-end
 #ifndef GFX_USE_OPENGL_ES
     gfx.enableMultiBuffer(2);
 #endif
-    // Clear screen to black
-    gfx.fillScreen(0x0000); 
+    gfx.fillScreen(0x0000);
     gfx.swapBuffers();
 
     // Start USB in background, don't block init
@@ -66,50 +106,31 @@ void App::init() {
     pthread_create(&usb_thread, nullptr, App::usbThreadFunc, this);
 }
 
-void App::drawGauge(int x, int y, int r, float value, float minVal, float maxVal) {
-    // 1. Draw the scale arc (semi-circle)
-    for (int i = 0; i <= 180; i += 5) {
-        float rad = (180 + i) * M_PI / 180.0;
-        int x1 = x + (r - 5) * cos(rad);
-        int y1 = y + (r - 5) * sin(rad);
-        int x2 = x + r * cos(rad);
-        int y2 = y + r * sin(rad);
-        gfx.drawLine(x1, y1, x2, y2, 0xFFFF);
-    }
-
-    // 2. Map value to angle (180 degrees to 0 degrees)
-    float angle = ((value - minVal) / (maxVal - minVal) * 180.0);
-    if (angle < 0) angle = 0;
-    if (angle > 180) angle = 180;
-    
-    float rad = (180 + angle) * M_PI / 180.0;
-    int nx = x + (r - 10) * cos(rad);
-    int ny = y + (r - 10) * sin(rad);
-
-    // 3. Draw Needle
-    gfx.drawLine(x, y, nx, ny, 0xF800); // Red needle
-}
-
 int App::run() {
+    int sw = gfx.width();
+    int sh = gfx.height();
+
     while (true) {
-        float ch0 = adc.readVoltage(ADS1115::AIN0_GND, ADS1115::PGA_6V144);
+        pthread_mutex_lock(&frameMutex);
+        if (frameReady) {
+            memcpy(frameBufB, frameBufA, FRAME_SIZE);
+        }
+        bool hasFrame = frameReady;
+        pthread_mutex_unlock(&frameMutex);
 
-        gfx.fillScreen(0x0000); 
-
-        // Draw gauge at center of screen, radius 100
-        drawGauge(240, 200, 100, ch0, 0.0, 4.096);
-
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%.3f V", ch0);
-        gfx.setCursor(210, 210);
-        gfx.writeText(buf);
-
-        // show last status message from usbd client
-        gfx.setCursor(10, 10);
-        gfx.writeText(statusMsg);
+        if (hasFrame) {
+            int ox = (sw - SCREEN_W) / 2;
+            int oy = (sh - SCREEN_H) / 2;
+            gfx.drawRGBBitmap(ox, oy, frameBufB, SCREEN_W, SCREEN_H);
+        } else {
+            gfx.fillScreen(0x0000);
+            gfx.setCursor(10, 10);
+            gfx.setTextColor(gfx.color565(0xFF, 0xFF, 0xFF), gfx.color565(0x00, 0x00, 0x00));
+            gfx.writeText(statusMsg);
+        }
 
         gfx.swapBuffers();
-        usleep(50000); // 50ms for smoother updates
+        usleep(16000);
     }
     return 0;
 }
