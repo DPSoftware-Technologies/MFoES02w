@@ -11,7 +11,7 @@ For kernel and SD card file. You can download from [here](https://s3.lvsr.proxy.
 ![_DSC2353 (Large)](https://github.com/user-attachments/assets/9cc0e842-3400-4bae-8145-f8c3692fd506)
 
 ## Supported Hardware
-For Raspberry Pi Zero 2 W
+For Raspberry Pi Zero 2w
 
 Designed for 1280x720 resolution
 
