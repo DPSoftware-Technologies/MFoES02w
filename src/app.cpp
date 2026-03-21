@@ -6,7 +6,11 @@
 #define RECV_BUF_SIZE (1 + FRAME_SIZE)
 
 App::App()
+#ifdef GFX_USE_DRM_DUMB
+    :   gfx("/dev/dri/card0"),
+#else
     :   gfx("/dev/fb0"),
+#endif
         i2c("/dev/i2c-1"),
         frameReady(false),
         touch(i2c, 17, 27),  // int_pin=17, rst_pin=27
@@ -23,7 +27,9 @@ App::~App() {
 }
 
 void App::init() {
+#ifndef GFX_USE_DRM_DUMB
     gfx.enableMultiBuffer(2);
+#endif
     gfx.fillScreen(0x0000);
     gfx.swapBuffers();
 
@@ -99,6 +105,7 @@ int App::run() {
         } else {
             gfx.fillScreen(0x0000);
         }
+
         // draw status
         gfx.setCursor(10, 10);
         gfx.setTextColor(
@@ -130,11 +137,9 @@ int App::run() {
             }
             ui.handleEvent(e);
         }
-        if (!hide_ui) {
-            ui.draw(gfx);
-        }
+        if (!hide_ui) {ui.draw(gfx);};
 
-        if (show_about) {renderAbout(sw, sh);}
+        if (show_about) {renderAbout(sw, sh);};
 
         gfx.swapBuffers();
         usleep(16000); // ~60 FPS

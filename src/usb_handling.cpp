@@ -26,6 +26,12 @@ void App::usbLoop() {
             ssize_t r = usbdc.recv(buf, tile_buf_size);
             if (r < 1) break;
 
+            // Update general data
+            if (buf[0] == MSG_UPDATE_VALUE && r >= 17) {
+                memcpy(&cvdata, buf, sizeof(CValue));
+            }
+
+            // update TILE
             if (buf[0] == MSG_TILE_UPDATE) {
                 TileUpdateHeader *hdr = (TileUpdateHeader*)buf;
                 uint8_t  tx = hdr->tx;

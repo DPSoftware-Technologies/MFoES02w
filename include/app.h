@@ -13,8 +13,6 @@
 #include "uisys/manager.h"
 #include <unistd.h>
 
-
-// ── Display ───────────────────────────────────────────────────────────────────
 #define SCREEN_W     1280
 #define SCREEN_H     720
 #define FRAME_PIXELS (SCREEN_W * SCREEN_H)
@@ -24,6 +22,7 @@
 #define MSG_TILE         0xF1   // tiled full frame (legacy)
 #define MSG_FRAME_TILED  0xF2   // single-send full frame
 #define MSG_TILE_UPDATE  0xF5   // DTS: single tile update
+#define MSG_UPDATE_VALUE 0xD0   // Update value
 
 #define TILES_X     8
 #define TILES_Y     4
@@ -60,7 +59,21 @@ struct TileUpdateHeader {
     uint16_t tw, th;
 };  // 7 bytes
 
+struct CValue {
+    uint8_t  type;
+    uint16_t v1;
+    uint16_t v2;
+    uint16_t v3;
+    uint16_t v4;
+    uint16_t v5;
+    uint16_t v6;
+    uint16_t v7;
+    uint16_t v8;
+}; // 17 bytes
+
 #pragma pack(pop)
+
+static_assert(sizeof(CValue) == 17, "Size mismatch!");
 
 class App {
     public:
@@ -75,6 +88,8 @@ class App {
         UsbdClient usbdc;
         GT911 touch;
         GpioPin buz;
+
+        CValue cvdata;
 
         uisys::Manager ui;
 

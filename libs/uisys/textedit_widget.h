@@ -101,6 +101,7 @@ public:
     }
 
     void handleEvent(const TouchEventData& e) {
+        if (!visible_widget) return;
         if (e.event == TouchEvent::PRESS) {
             if (hitTest(e.point.x, e.point.y)) {
                 if (!focused) focus();

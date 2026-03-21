@@ -5,7 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 
-// ── Type aliases (replaces circle/types.h) ───────────────────────────────────
+// ── Type aliases ─────────────────────────────────────────────────────────────
 typedef uint8_t  u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
@@ -19,14 +19,30 @@ typedef int32_t  s32;
 #define ABS(a)    ((a)<0?-(a):(a))
 
 // ─── Backend selection ────────────────────────────────────────────────────────
-// Define GFX_USE_OPENGL_ES before including this header (or in your Makefile)
-// to use the hardware-accelerated OpenGL ES 2.0 back-end via EGL/DRM.
-// Without that define the raw /dev/fb0 framebuffer back-end is used.
+//
+// Two back-ends, selected at compile time:
+//
+//  1. DRM/KMS dumb-buffer  (default — define GFX_USE_DRM_DUMB or nothing)
+//     Allocates GPU-side dumb buffers via DRM_IOCTL_MODE_CREATE_DUMB,
+//     memory-maps them for CPU writes, and page-flips via KMS with zero copy.
+//     No OpenGL, no EGL, no GBM.  The display controller scans out directly
+//     from the dumb buffer — this IS direct GPU render/scanout memory.
+//     Build: g++ -O2 -std=c++14 -o demo demo.cpp GFX.cpp -ldrm
+//
+//  2. /dev/fb0 framebuffer  (define GFX_USE_FB)
+//     Legacy CPU-rendering into mmap'd /dev/fb0.
+//     Supports triple-buffering with malloc buffers + memcpy.
+//     Build: g++ -O2 -std=c++14 -DGFX_USE_FB -o demo demo.cpp GFX.cpp
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
-#ifdef GFX_USE_OPENGL_ES
-#  include <EGL/egl.h>
-#  include <GLES2/gl2.h>
+#if !defined(GFX_USE_DRM_DUMB) && !defined(GFX_USE_FB)
+#  define GFX_USE_DRM_DUMB
+#endif
+
+#ifdef GFX_USE_DRM_DUMB
+// Kernel uAPI header — ships with linux-headers in Buildroot; no libdrm needed.
+#  include <drm/drm_mode.h>
 #endif
 
 // ===== FONT STRUCTURES (Compatible with Adafruit GFX) ========================
@@ -51,8 +67,8 @@ enum BufferIndex { BUFFER_0 = 0, BUFFER_1 = 1, BUFFER_2 = 2 };
 
 typedef struct {
     uint16_t *pData;
-    bool   bOwned;
-    bool   bReady;
+    bool      bOwned;
+    bool      bReady;
 } FrameBuffer;
 
 // ===== LinuxGFX ===============================================================
@@ -61,34 +77,35 @@ typedef struct {
  *
  * Two back-ends, selected at compile time:
  *
- *   1. /dev/fb0 framebuffer (default)
- *      Pure CPU rendering into a mmap'd framebuffer.
- *      Supports triple-buffering (off-screen buffers + memcpy to fb).
- *      Constructor: LinuxGFX(const char *fbdev = "/dev/fb0")
+ *   1. DRM/KMS dumb-buffer  (default / -DGFX_USE_DRM_DUMB)
+ *      Allocates GPU-side "dumb buffers" via DRM_IOCTL_MODE_CREATE_DUMB.
+ *      These live in GPU-accessible memory; the CPU writes pixels into them
+ *      via a normal mmap, then drmModePageFlip hands them to the display
+ *      controller for zero-copy scanout — no memcpy, no GL, no EGL.
+ *      Supports double-buffering (draw / display ping-pong).
+ *      Build: g++ -O2 -std=c++14 -o demo demo.cpp GFX.cpp -ldrm
  *
- *   2. OpenGL ES 2.0 via EGL/GBM  (define GFX_USE_OPENGL_ES)
- *      Uses the VideoCore / V3D GPU.  fillRect, fillScreen and
- *      drawRGBBitmap are GPU-accelerated; all other primitives fall
- *      back to CPU via 1×1 quads (fast enough for lines/text).
- *      Constructor: LinuxGFX(const char *drmdev = "/dev/dri/card0")
+ *   2. /dev/fb0 framebuffer  (-DGFX_USE_FB)
+ *      Legacy CPU-rendering into mmap'd /dev/fb0.
+ *      Supports triple-buffering (off-screen malloc buffers + memcpy).
+ *      Build: g++ -O2 -std=c++14 -DGFX_USE_FB -o demo demo.cpp GFX.cpp
  *
- * The class was previously called CircleGFX; it is now LinuxGFX.
- * A typedef keeps old code working: typedef LinuxGFX CircleGFX;
+ * Backwards-compatible alias: typedef LinuxGFX CircleGFX;
  */
 class LinuxGFX {
 public:
 
-#ifdef GFX_USE_OPENGL_ES
+#ifdef GFX_USE_DRM_DUMB
     /**
-     * OpenGL ES 2.0 back-end constructor.
-     * @param drmdev  DRM/KMS device node, e.g. "/dev/dri/card0".
+     * DRM/KMS dumb-buffer back-end constructor.
+     * @param drmdev  DRM/KMS device node (e.g. "/dev/dri/card0").
      *                Pass nullptr to use the default.
      */
     explicit LinuxGFX(const char *drmdev = "/dev/dri/card0");
 #else
     /**
      * Framebuffer back-end constructor.
-     * @param fbdev  Framebuffer device node, e.g. "/dev/fb0".
+     * @param fbdev  Framebuffer device node (e.g. "/dev/fb0").
      */
     explicit LinuxGFX(const char *fbdev = "/dev/fb0");
 #endif
@@ -187,37 +204,48 @@ public:
     static uint16_t color565(uint8_t r, uint8_t g, uint8_t b);
     static uint16_t color565(uint32_t rgb);
 
-    // ===== SWAP BUFFERS / PRESENT ============================================
+    // ===== PRESENT / SWAP BUFFERS ============================================
     /**
      * Present the rendered frame.
      *
-     *  - OpenGL ES back-end: calls eglSwapBuffers().
-     *  - Framebuffer back-end with multi-buffering: memcpy to /dev/fb0.
-     *  - Framebuffer back-end without multi-buffering: no-op (direct write).
+     *  DRM dumb-buffer back-end:
+     *    Flips draw ↔ display buffers via KMS.  Zero memcpy.
+     *    @param async      true  = non-blocking drmModePageFlip (vblank-synced);
+     *                      false = blocking drmModeSetCrtc (immediate).
+     *    @param autoclear  Zero the new draw buffer after the flip.
      *
-     * @param autoclear  (FB back-end only) Clear draw buffer after swap.
+     *  Framebuffer back-end:
+     *    With multi-buffering: memcpy to /dev/fb0.
+     *    Without multi-buffering: no-op (direct writes already visible).
      */
-#ifdef GFX_USE_OPENGL_ES
-    void swapBuffers();
+#ifdef GFX_USE_DRM_DUMB
+    void swapBuffers(bool async = true, bool autoclear = true);
+
+    /** Block until a pending non-blocking page-flip completes. */
+    void waitForFlip();
+
+    /** Returns true if a non-blocking flip is currently in flight. */
+    bool isFlipPending() const { return m_flipPending; }
+
 #else
     void swapBuffers(bool autoclear = true);
 
     // ===== MULTI-BUFFER API (Framebuffer back-end only) ======================
 
-    bool  enableMultiBuffer    (uint8_t numBuffers = 2);
-    bool  isMultiBuffered      () const;
-    uint8_t  getBufferCount       () const;
-    uint8_t  getDrawBufferIndex   () const;
-    uint8_t  getDisplayBufferIndex() const;
+    bool      enableMultiBuffer    (uint8_t numBuffers = 2);
+    bool      isMultiBuffered      () const;
+    uint8_t   getBufferCount       () const;
+    uint8_t   getDrawBufferIndex   () const;
+    uint8_t   getDisplayBufferIndex() const;
 
-    bool  selectDrawBuffer    (uint8_t bufferIndex);
-    bool  selectDisplayBuffer (uint8_t bufferIndex);
+    bool      selectDrawBuffer     (uint8_t bufferIndex);
+    bool      selectDisplayBuffer  (uint8_t bufferIndex);
 
-    void     clearBuffer         (int8_t bufferIndex = -1, uint16_t color = 0);
-    uint16_t* getBuffer          (uint8_t bufferIndex);
+    void      clearBuffer          (int8_t bufferIndex = -1, uint16_t color = 0);
+    uint16_t* getBuffer            (uint8_t bufferIndex);
 
-    bool  attachExternalBuffer(uint8_t bufferIndex, uint16_t *pBuffer);
-    bool  detachExternalBuffer(uint8_t bufferIndex);
+    bool      attachExternalBuffer (uint8_t bufferIndex, uint16_t *pBuffer);
+    bool      detachExternalBuffer (uint8_t bufferIndex);
 #endif
 
 protected:
@@ -225,85 +253,93 @@ protected:
     void     setPixel (int16_t x, int16_t y, uint16_t color);
     uint16_t getPixel (int16_t x, int16_t y) const;
 
-    void drawCircleHelper    (int16_t x0, int16_t y0, int16_t r,
-                              uint8_t cornername, uint16_t color);
-    void fillCircleHelper    (int16_t x0, int16_t y0, int16_t r,
-                              uint8_t cornername, int16_t delta, uint16_t color);
+    void drawCircleHelper     (int16_t x0, int16_t y0, int16_t r,
+                               uint8_t cornername, uint16_t color);
+    void fillCircleHelper     (int16_t x0, int16_t y0, int16_t r,
+                               uint8_t cornername, int16_t delta, uint16_t color);
     void drawFastVLineInternal(int16_t x, int16_t y, int16_t h, uint16_t color);
     void drawFastHLineInternal(int16_t x, int16_t y, int16_t w, uint16_t color);
 
     // ── Back-end specific members ────────────────────────────────────────────
-#ifdef GFX_USE_OPENGL_ES
+#ifdef GFX_USE_DRM_DUMB
 
-    // EGL / GBM handles
-    int          m_drmFd;
-    void        *m_pGbmDevice;   // gbm_device*   (opaque to avoid gbm.h here)
-    void        *m_pGbmSurface;  // gbm_surface*
-    EGLDisplay   m_eglDisplay;
-    EGLContext   m_eglContext;
-    EGLSurface   m_eglSurface;
+    /**
+     * DRM dumb buffer descriptor.
+     *
+     * A dumb buffer is a simple linearly-tiled framebuffer allocated by the
+     * DRM driver in GPU-accessible (often CMA / contiguous) memory.  The CPU
+     * mmap's it for pixel writes; the display controller (CRTC) scans it out
+     * directly — no separate copy to a shadow framebuffer needed.
+     */
+    struct DumbBuf {
+        uint32_t  handle;   ///< GEM object handle returned by CREATE_DUMB
+        uint32_t  pitch;    ///< Bytes per scanline (driver-aligned, may be > width*2)
+        uint64_t  size;     ///< Total size in bytes
+        uint32_t  fbId;     ///< KMS framebuffer ID (from drmModeAddFB)
+        uint16_t *map;      ///< CPU-writable mmap pointer (RGB565 pixels)
+    };
 
-    // GLSL programs
-    GLuint m_shaderFlat;
-    GLuint m_uFlatColor, m_uFlatMVP;
-    GLuint m_vboQuad;
+    int      m_drmFd;                    ///< Open file descriptor for /dev/dri/cardN
+    uint32_t m_connId;                   ///< DRM connector ID
+    uint32_t m_crtcId;                   ///< DRM CRTC ID
+    uint32_t m_modeIdx;                  ///< Selected display mode index
 
-    GLuint m_shaderTex;
-    GLuint m_uTexMVP, m_uTexSampler;
+    // Cached copy of the selected mode (drm_mode_modeinfo from kernel uAPI).
+    // Stored so swapBuffers() never needs to re-query the connector.
+    // drm_mode_modeinfo is a fixed 68-byte POD struct; we carry a raw copy.
+    struct drm_mode_modeinfo m_selectedMode;
 
-    GLuint  m_scratchTex;
-    int16_t m_scratchW, m_scratchH;
+    static constexpr int kNumDrmBufs = 2;
+    DumbBuf  m_drm[kNumDrmBufs];         ///< Double-buffer pair
 
-    GLuint  compileShader  (GLenum type, const char *src);
-    GLuint  linkProgram    (GLuint vs, GLuint fs);
-    void    initGLResources();
-    void    drawGLRect     (int16_t x, int16_t y, int16_t w, int16_t h,
-                            float r, float g, float b, float a);
-    void    uploadAndDrawTex(int16_t x, int16_t y, int16_t w, int16_t h,
-                             const uint16_t *pixels);
+    uint8_t  m_drawIdx;                  ///< Index of the buffer we're drawing into
+    uint8_t  m_dispIdx;                  ///< Index of the buffer currently on screen
+    bool     m_flipPending;              ///< Non-blocking page-flip in flight?
+    uint16_t *m_pBuffer;                 ///< Alias → m_drm[m_drawIdx].map
 
-    // DRM/KMS connector/CRTC state (minimal – only what's needed for EGL)
-    uint32_t m_drmConnId;
-    uint32_t m_drmCrtcId;
-    uint32_t m_drmModeIdx;
+    bool initDrm    (const char *drmdev);
+    void cleanupDrm ();
+    bool allocDumbBuf(DumbBuf &b);
+    void freeDumbBuf (DumbBuf &b);
 
-    bool initDrmEgl(const char *drmdev);
-    void cleanupDrmEgl();
+    // libdrm page-flip event handler (static so it matches the C callback sig)
+    static void pageFlipHandler(int fd, unsigned int seq,
+                                unsigned int tv_sec, unsigned int tv_usec,
+                                void *data);
 
-#else // Framebuffer back-end
+#else // ── /dev/fb0 Framebuffer back-end ──────────────────────────────────────
 
     int       m_fbFd;
     uint8_t  *m_pFbMem;
     size_t    m_fbMemSize;
-    uint32_t  m_pitch;        // bytes per line
-    uint32_t  m_depth;        // bits per pixel
-    uint16_t *m_pBuffer;      // current draw buffer (may be off-screen)
+    uint32_t  m_pitch;             ///< bytes per line
+    uint32_t  m_depth;             ///< bits per pixel
+    uint16_t *m_pBuffer;           ///< current draw buffer
 
-    // Multi-buffer state
     FrameBuffer m_buffers[3];
     uint8_t     m_bufferCount;
     uint8_t     m_drawBufferIndex;
     uint8_t     m_displayBufferIndex;
-    bool     m_multiBufferEnabled;
+    bool        m_multiBufferEnabled;
 
     void _initializeMultiBuffer();
     void _cleanupMultiBuffer();
-    void _flushToFb();          // copy draw buffer → /dev/fb0
+    void _flushToFb();
 
-#endif
+#endif // GFX_USE_DRM_DUMB
 
     // ── Common members ───────────────────────────────────────────────────────
     int16_t  m_width, m_height;
     int16_t  m_cursorX, m_cursorY;
     uint16_t m_textColor, m_textBgColor;
     uint8_t  m_textSizeX, m_textSizeY;
-    bool  m_textWrap;
+    bool     m_textWrap;
     uint8_t  m_rotation;
-    bool  m_inverted;
-    bool  m_inTransaction;
+    bool     m_inverted;
+    bool     m_inTransaction;
 
     const GFXfont *m_pFont;
-    bool        m_fontSizeMultiplied;
+    bool           m_fontSizeMultiplied;
 };
 
 // Backwards-compat alias

@@ -2,27 +2,27 @@
 
 void App::initSysUI() {
     ui.addButton("quit", 50, 50, 180, 60, "QUIT", uisys::ButtonMode::TRIGGER,
-        [this](bool s){
+        [this](int s){
             pthread_join(usb_thread, nullptr);
             exit(0);
         },
         uisys::ButtonTheme::Danger());
 
     ui.addButton("halt", 250, 50, 180, 60, "Halt", uisys::ButtonMode::TRIGGER,
-        [this](bool s){
+        [this](int s){
             system("halt");
         },
         uisys::ButtonTheme::Danger());
 
     ui.addButton("hideui", 450, 50, 180, 60, "Hide All UI", uisys::ButtonMode::TRIGGER,
-        [this](bool s){
+        [this](int s){
             show_about = false;
             hide_ui = true;
         },
         uisys::ButtonTheme::Danger());
     
     ui.addButton("restart", 650, 50, 180, 60, "Restart", uisys::ButtonMode::TRIGGER,
-        [this](bool s){
+        [this](int s){
             system("reboot");
         },
         uisys::ButtonTheme::Danger());
@@ -35,14 +35,16 @@ void App::initSysUI() {
 
 void App::initDemoUI() {
     ui.addButton("fire",  50,  600, 180, 60, "FIRE",  uisys::ButtonMode::TRIGGER,
-    [this](bool s){ buz.set(1); usleep(50000); buz.set(0); });
+    [this](int s){ buz.set(1); usleep(50000); buz.set(0); });
 
     ui.addButton("arm",   250, 600, 180, 60, "ARM",   uisys::ButtonMode::TOGGLE,
-        [this](bool s){ printf("ARM = %s\n", s ? "ON" : "OFF"); },
+        [this](int s){  },
         uisys::ButtonTheme::Military());
 
     ui.addButton("boost", 450, 600, 180, 60, "BOOST", uisys::ButtonMode::HOLD,
-        [this](bool s){ buz.set(s ? 1 : 0); },
+        [this](int s){
+            buz.set((s == 3) ? 1 : 0); 
+        },
         uisys::ButtonTheme::HUD());
 
     ui.addSlider("vol",  50, 500, 300, 30, uisys::SliderOrientation::HORIZONTAL,
@@ -97,26 +99,29 @@ void App::initDemoUI() {
 }
 void App::initSidebarBTNs() {
     ui.addButton("sinfo", 1075, 440, 180, 50, "Show Info",   uisys::ButtonMode::TOGGLE,
-        [this](bool s){
-            show_about = s;
+        [this](int s){
+            show_about = (s == 1) ? true : false;
         },
         uisys::ButtonTheme::Military());
 
     ui.addButton("ssui", 1075, 520, 180, 50, "Show System UI",   uisys::ButtonMode::TOGGLE,
-        [this](bool s){
-            ui.getButton("quit")->setVisible(s);
-            ui.getButton("halt")->setVisible(s);
-            ui.getButton("hideui")->setVisible(s);
-            ui.getButton("restart")->setVisible(s);
+        [this](int s){
+            bool state = (s == 1) ? true : false;
+
+            ui.getButton("quit")->setVisible(state);
+            ui.getButton("halt")->setVisible(state);
+            ui.getButton("hideui")->setVisible(state);
+            ui.getButton("restart")->setVisible(state);
         },
         uisys::ButtonTheme::Military());
 
     ui.addButton("sdui", 1075, 600, 180, 50, "Show Demo UI",   uisys::ButtonMode::TOGGLE,
-        [this](bool s){
-            ui.getComboBox("mode")->setVisible(s);
-            ui.getSpinBox("speed")->setVisible(s);
-            ui.getSpinBox("gain2")->setVisible(s);
-            if (!s) {
+        [this](int s){
+            bool state = (s == 1) ? true : false;
+            ui.getComboBox("mode")->setVisible(state);
+            ui.getSpinBox("speed")->setVisible(state);
+            ui.getSpinBox("gain2")->setVisible(state);
+            if (!state) {
                 ui.hide("fire");
                 ui.hide("boost");
                 ui.hide("gain");
@@ -156,5 +161,5 @@ void App::renderAbout(int sw, int sh) {
     gfx.setCursor(720, sh-135);
     gfx.setTextSize(2);
     gfx.writeText("Adafruit GFX Compatible");
-    gfx.drawBitmap(795, sh-100, adaf_logo_bmp, 115, 32, gfx.color565(0xFF,0xFF,0xFF));
+    gfx.drawBitmap(795, sh-100, adaf_logo_bmp, 115, 32, 0xFFFFFF);
 }

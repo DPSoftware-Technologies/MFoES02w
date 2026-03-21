@@ -14,7 +14,7 @@ cmake -B "${BUILD_DIR}" \
     -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-alpine-musl.cmake \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
     -DSTATIC_LINK=ON \
-    -DGFX_USE_OPENGL_ES=OFF \
+    -DGFX_USE_FB=ON \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 cmake --build "${BUILD_DIR}" --parallel "$(nproc)"
