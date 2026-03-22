@@ -19,7 +19,7 @@ cmake -B "${BUILD_DIR}" \
 
 cmake --build "${BUILD_DIR}" --parallel "$(nproc)"
 
-# ── Bundle libs into build/libs ───────────────────────────────────────────────
+#  Bundle libs into build/libs 
 # echo "Bundling shared libs..."
 # mkdir -p "${BUILD_DIR}/libs"
 # for lib in \

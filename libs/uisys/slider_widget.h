@@ -18,97 +18,51 @@ public:
 private:
     int x, y, w, h;
     SliderOrientation orientation;
-    float value  = 0.0f;
-    float minVal = 0.0f;
-    float maxVal = 1.0f;
+    float value    = 0.0f;
+    float minVal   = 0.0f;
+    float maxVal   = 1.0f;
     bool  dragging = false;
 
     std::string label;
     Callback    onChange;
     Font        font;
 
-    uint16_t colTrack  = 0x2104;
-    uint16_t colFill   = 0x07E0;
-    uint16_t colThumb  = 0xFFFF;
-    uint16_t colBorder = 0x8C71;
-    uint16_t colText   = 0xFFFF;
+    uint32_t colTrack  = 0xFF212021u;  // was 0x2104  →  rgb(33,32,33)
+    uint32_t colFill   = 0xFF00FF00u;  // was 0x07E0  →  rgb(0,255,0)
+    uint32_t colThumb  = 0xFFFFFFFFu;  // was 0xFFFF  →  rgb(255,255,255)
+    uint32_t colBorder = 0xFF8C8E8Cu;  // was 0x8C71  →  rgb(140,142,140)
+    uint32_t colText   = 0xFFFFFFFFu;  // was 0xFFFF  →  rgb(255,255,255)
 
     static constexpr int THUMB_SIZE = 20;
 
-    bool trackHitTest(int tx, int ty) const {
-        return tx >= x && tx <= x+w && ty >= y && ty <= y+h;
-    }
+    bool  trackHitTest(int tx, int ty) const;
+    void  getThumbRect(int& ox, int& oy, int& ow, int& oh) const;
+    float pointToValue(int tx, int ty) const;
+    float mappedValue() const;
 
-    void getThumbRect(int& ox, int& oy, int& ow, int& oh) const {
-        if (orientation == SliderOrientation::HORIZONTAL) {
-            ox = x + (int)(value * (w - THUMB_SIZE));
-            oy = y + (h - THUMB_SIZE) / 2;
-        } else {
-            ox = x + (w - THUMB_SIZE) / 2;
-            oy = y + (int)((1.0f - value) * (h - THUMB_SIZE));
-        }
-        ow = oh = THUMB_SIZE;
-    }
-
-    float pointToValue(int tx, int ty) const {
-        float v;
-        if (orientation == SliderOrientation::HORIZONTAL)
-            v = (float)(tx - x - THUMB_SIZE/2) / (float)(w - THUMB_SIZE);
-        else
-            v = 1.0f - (float)(ty - y - THUMB_SIZE/2) / (float)(h - THUMB_SIZE);
-        return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
-    }
-
-    float mappedValue() const { return minVal + value * (maxVal - minVal); }
-
-bool visible_widget = true;
+    bool visible_widget = true;
 
 public:
-    SliderWidget() : x(0), y(0), w(200), h(40), orientation(SliderOrientation::HORIZONTAL) {}
-
+    SliderWidget();
     SliderWidget(int x, int y, int w, int h,
                  SliderOrientation ori, const std::string& label,
                  float minVal = 0.0f, float maxVal = 1.0f,
-                 Callback cb = nullptr, Font font = Font::Medium())
-        : x(x), y(y), w(w), h(h), orientation(ori),
-          minVal(minVal), maxVal(maxVal), label(label), onChange(cb), font(font) {}
+                 Callback cb = nullptr, Font font = Font::Medium());
 
-    void setValue(float v) {
-        value = (v - minVal) / (maxVal - minVal);
-        value = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
-    }
+    void  setValue(float v);
+    float getValue()      const;
+    float getNormalized() const;
 
-    float getValue()      const { return mappedValue(); }
-    float getNormalized() const { return value; }
+    void setFont(const Font& f);
+    void setVisible(bool v);
+    bool isVisible() const;
+    void setCallback(Callback cb);
+    void setColors(uint32_t track, uint32_t fill, uint32_t thumb,
+                   uint32_t border, uint32_t text);
 
-    void setFont(const Font& f)   { font = f; }
-        void setVisible(bool v) { visible_widget = v; }
-    bool isVisible()   const { return visible_widget; }
+    void handleEvent(const TouchEventData& e);
 
-    void setCallback(Callback cb) { onChange = cb; }
-    void setColors(uint16_t track, uint16_t fill, uint16_t thumb, uint16_t border, uint16_t text) {
-        colTrack=track; colFill=fill; colThumb=thumb; colBorder=border; colText=text;
-    }
-
-    void handleEvent(const TouchEventData& e) {
-        if (!visible_widget) return;
-        switch (e.event) {
-            case TouchEvent::PRESS:
-                if (trackHitTest(e.point.x, e.point.y)) {
-                    dragging = true;
-                    value = pointToValue(e.point.x, e.point.y);
-                    if (onChange) onChange(mappedValue());
-                }
-                break;
-            case TouchEvent::MOVE:
-                if (dragging) { value = pointToValue(e.point.x, e.point.y); if (onChange) onChange(mappedValue()); }
-                break;
-            case TouchEvent::RELEASE:
-                dragging = false;
-                break;
-            default: break;
-        }
-    }
+    //  Draw — templated, must remain in header 
 
     template<typename GFX>
     void draw(GFX& gfx) const {
@@ -133,19 +87,19 @@ public:
         snprintf(valBuf, sizeof(valBuf), "%.1f", mappedValue());
 
         font.apply(gfx);
-        gfx.setTextColor(colText, 0x0000);
+        gfx.setTextColor(colText, GFX_TRANSPARENT);
 
         if (orientation == SliderOrientation::HORIZONTAL) {
             gfx.setCursor(x, y - font.charH() - 2);
             gfx.writeText(label.c_str());
             gfx.setCursor(x + w - font.textWidth((int)strlen(valBuf)), y - font.charH() - 2);
-            gfx.setTextColor(colFill, 0x0000);
+            gfx.setTextColor(colFill, GFX_TRANSPARENT);
             gfx.writeText(valBuf);
         } else {
             gfx.setCursor(x + (w - font.textWidth((int)label.size())) / 2, y - font.charH() - 2);
             gfx.writeText(label.c_str());
             gfx.setCursor(x + (w - font.textWidth((int)strlen(valBuf))) / 2, y + h + 4);
-            gfx.setTextColor(colFill, 0x0000);
+            gfx.setTextColor(colFill, GFX_TRANSPARENT);
             gfx.writeText(valBuf);
         }
     }

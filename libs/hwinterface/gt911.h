@@ -3,20 +3,15 @@
 #include "gpio_sysfs.h"
 #include <cstdint>
 #include <cstring>
-#include <cmath>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/epoll.h>
 #include <thread>
 #include <atomic>
 #include <functional>
 #include <mutex>
 #include <chrono>
-#include <stdexcept>
 #include <map>
 #include <vector>
 
-// ─── GT911 register map ───────────────────────────────────────────────────────
+//  GT911 register map 
 
 #define GT911_I2C_ADDR_28   0x14   // INT high during reset
 #define GT911_I2C_ADDR_BA   0x5D   // INT low during reset  (default)
@@ -29,7 +24,7 @@
 #define GT911_REG_COORD_ADDR 0x814E  // status register
 #define GT911_REG_COORD_BASE 0x814F  // first touch point
 
-// ─── Packed structs (match Arduino reference exactly) ────────────────────────
+//  Packed structs (match Arduino reference exactly) 
 
 struct __attribute__((packed)) GTInfo {
     char     productId[4];   // 0x8140-0x8143
@@ -146,7 +141,7 @@ struct __attribute__((packed)) GTConfig {
     uint8_t  NC_10[16];            // 0x80EF-0x80FE
 };
 
-// ─── Gesture event types ──────────────────────────────────────────────────────
+//  Gesture event types 
 
 enum class TouchEvent {
     PRESS,
@@ -171,17 +166,17 @@ struct TouchEventData {
     uint32_t   duration_ms;
 };
 
-// ─── Internal per-finger tracking ────────────────────────────────────────────
+//  Internal per-finger tracking 
 
 struct TrackState {
     TouchPoint point;
     std::chrono::steady_clock::time_point pressTime;
+    std::chrono::steady_clock::time_point releaseTime;  // when this ID last released
     uint16_t startX;
     uint16_t startY;
     bool holdFired;
+    bool debouncing;  // true = released but within debounce window, suppress re-press
 };
-
-// ─── GT911 Linux driver ───────────────────────────────────────────────────────
 
 class GT911 {
 public:
@@ -208,359 +203,53 @@ private:
 
     uint16_t moveThreshold = 5;
     uint32_t holdMs        = 500;
+    uint32_t debounceMs    = 75;
 
-    std::map<uint8_t, TrackState> tracked;
+    std::map<uint8_t, TrackState>                              tracked;
+    std::map<uint8_t, std::chrono::steady_clock::time_point>   lastRelease;
 
     GTInfo   _info;
     GTConfig _config;
     bool     _configLoaded = false;
 
-    // ── Low-level I2C (matches Arduino reference pattern) ────────────────────
+    void    i2cSetReg(uint16_t reg);
+    bool    writeReg(uint16_t reg, uint8_t data);
+    uint8_t readReg(uint16_t reg);
+    bool    writeBytes(uint16_t reg, uint8_t* data, uint16_t size);
+    bool    readBytes(uint16_t reg, uint8_t* data, uint16_t size);
 
-    void i2cSetReg(uint16_t reg) {
-        uint8_t buf[2] = {(uint8_t)(reg >> 8), (uint8_t)(reg & 0xFF)};
-        ::write(i2c.getFd(), buf, 2);
-    }
+    uint8_t calcChecksum(uint8_t* buf, uint8_t len);
+    uint8_t readChecksum();
 
-    bool writeReg(uint16_t reg, uint8_t data) {
-        uint8_t buf[3] = {(uint8_t)(reg >> 8), (uint8_t)(reg & 0xFF), data};
-        return ::write(i2c.getFd(), buf, 3) == 3;
-    }
+    void hardReset();
+    void setupEdgeInterrupt(int gpio_abs);
 
-    uint8_t readReg(uint16_t reg) {
-        i2cSetReg(reg);
-        uint8_t val = 0;
-        ::read(i2c.getFd(), &val, 1);
-        return val;
-    }
-
-    bool writeBytes(uint16_t reg, uint8_t* data, uint16_t size) {
-        std::vector<uint8_t> buf(2 + size);
-        buf[0] = reg >> 8;
-        buf[1] = reg & 0xFF;
-        memcpy(buf.data() + 2, data, size);
-        return ::write(i2c.getFd(), buf.data(), 2 + size) == (ssize_t)(2 + size);
-    }
-
-    bool readBytes(uint16_t reg, uint8_t* data, uint16_t size) {
-        i2cSetReg(reg);
-        ssize_t r = ::read(i2c.getFd(), data, size);
-        return r == (ssize_t)size;
-    }
-
-    // ── Checksum (from Arduino reference) ────────────────────────────────────
-
-    uint8_t calcChecksum(uint8_t* buf, uint8_t len) {
-        uint8_t sum = 0;
-        for (uint8_t i = 0; i < len; i++) sum += buf[i];
-        return (~sum) + 1;
-    }
-
-    uint8_t readChecksum() { return readReg(GT911_REG_CHECKSUM); }
-
-    // ── Reset sequence (from Arduino reference) ───────────────────────────────
-    // INT low during reset = 0x5D, INT high = 0x14
-
-    void hardReset() {
-        intPin.set(0);
-        rstPin.set(0);
-        usleep(11000);  // >10ms
-
-        // Set INT level to select address
-        intPin.set(addr == GT911_I2C_ADDR_28 ? 1 : 0);
-        usleep(110);    // >100us
-
-        rstPin.set(1);  // release reset (input in Arduino, we just set high)
-        usleep(6000);   // >5ms
-
-        intPin.set(0);
-        usleep(51000);  // >50ms settle
-    }
-
-    // ── Epoll edge interrupt ──────────────────────────────────────────────────
-
-    void setupEdgeInterrupt(int gpio_abs) {
-        std::string base = "/sys/class/gpio/gpio" + std::to_string(gpio_abs);
-
-        std::ofstream edge(base + "/edge");
-        if (!edge) throw std::runtime_error("Cannot set edge on INT pin");
-        edge << "falling";
-        edge.flush();
-
-        intFd = open((base + "/value").c_str(), O_RDONLY | O_NONBLOCK);
-        if (intFd < 0) throw std::runtime_error("Cannot open INT value fd");
-
-        char buf; lseek(intFd, 0, SEEK_SET); ::read(intFd, &buf, 1);
-
-        epollFd = epoll_create1(0);
-        if (epollFd < 0) throw std::runtime_error("Cannot create epoll");
-
-        struct epoll_event ev{};
-        ev.events  = EPOLLPRI | EPOLLERR;
-        ev.data.fd = intFd;
-        epoll_ctl(epollFd, EPOLL_CTL_ADD, intFd, &ev);
-    }
-
-    // ── Raw touch read (matches Arduino readTouches + readTouchPoints) ────────
-
-    int readRawTouches(GTPoint* points) {
-        i2c.setAddr(addr);
-
-        // Poll status register — bit7=buffer ready, bits0-3=count
-        uint8_t flag = readReg(GT911_REG_COORD_ADDR);
-        if (!(flag & 0x80)) return 0;
-
-        int count = flag & 0x0F;
-        if (count < 0 || count > GT911_MAX_CONTACTS) {
-            writeReg(GT911_REG_COORD_ADDR, 0);
-            return 0;
-        }
-
-        if (count > 0) {
-            readBytes(GT911_REG_COORD_BASE,
-                      (uint8_t*)points,
-                      sizeof(GTPoint) * count);
-        }
-
-        // Clear status register (critical — must write 0 after read)
-        writeReg(GT911_REG_COORD_ADDR, 0);
-        return count;
-    }
-
-    // ── Fire event ────────────────────────────────────────────────────────────
-
-    void fireEvent(const TouchEventData& ev) {
-        std::lock_guard<std::mutex> lock(cbMutex);
-        if (onAnyCallback) onAnyCallback(ev);
-        switch (ev.event) {
-            case TouchEvent::PRESS:   if (onPressCallback)   onPressCallback(ev);   break;
-            case TouchEvent::RELEASE: if (onReleaseCallback) onReleaseCallback(ev); break;
-            case TouchEvent::MOVE:    if (onMoveCallback)    onMoveCallback(ev);    break;
-            case TouchEvent::HOLD:    if (onHoldCallback)    onHoldCallback(ev);    break;
-        }
-    }
-
-    // ── Gesture processing ────────────────────────────────────────────────────
-
-    void processTouches(GTPoint* gtPoints, int count) {
-        auto now = std::chrono::steady_clock::now();
-
-        // Build current active map from GTPoint array
-        std::map<uint8_t, TouchPoint> currentMap;
-        for (int i = 0; i < count; i++) {
-            TouchPoint tp;
-            tp.id     = gtPoints[i].trackId;
-            tp.x      = gtPoints[i].x;
-            tp.y      = gtPoints[i].y;
-            tp.size   = gtPoints[i].area;
-            tp.active = true;
-            currentMap[tp.id] = tp;
-        }
-
-        // ── RELEASE ───────────────────────────────────────────────────────────
-        std::vector<uint8_t> released;
-        for (auto& [id, state] : tracked)
-            if (currentMap.find(id) == currentMap.end())
-                released.push_back(id);
-
-        for (uint8_t id : released) {
-            auto& state = tracked[id];
-            uint32_t dur = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - state.pressTime).count();
-            TouchEventData ev{};
-            ev.event       = TouchEvent::RELEASE;
-            ev.point       = state.point;
-            ev.dx          = 0; ev.dy = 0;
-            ev.duration_ms = dur;
-            fireEvent(ev);
-            tracked.erase(id);
-        }
-
-        // ── PRESS / MOVE / HOLD ───────────────────────────────────────────────
-        for (auto& [id, tp] : currentMap) {
-            if (tracked.find(id) == tracked.end()) {
-                // PRESS
-                TrackState state{};
-                state.point     = tp;
-                state.pressTime = now;
-                state.startX    = tp.x;
-                state.startY    = tp.y;
-                state.holdFired = false;
-                tracked[id]     = state;
-
-                TouchEventData ev{};
-                ev.event = TouchEvent::PRESS;
-                ev.point = tp;
-                ev.dx = 0; ev.dy = 0; ev.duration_ms = 0;
-                fireEvent(ev);
-
-            } else {
-                auto& state = tracked[id];
-                int16_t  dx   = (int16_t)tp.x - (int16_t)state.point.x;
-                int16_t  dy   = (int16_t)tp.y - (int16_t)state.point.y;
-                float    dist = std::sqrt((float)(dx*dx + dy*dy));
-                uint32_t dur  = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now - state.pressTime).count();
-
-                // MOVE
-                if (dist >= (float)moveThreshold) {
-                    TouchEventData ev{};
-                    ev.event = TouchEvent::MOVE;
-                    ev.point = tp;
-                    ev.dx = dx; ev.dy = dy;
-                    ev.duration_ms = dur;
-                    fireEvent(ev);
-                    state.point = tp;
-                }
-
-                // HOLD — once, only if not wandered
-                if (!state.holdFired && dur >= holdMs) {
-                    int16_t tdx   = (int16_t)tp.x - (int16_t)state.startX;
-                    int16_t tdy   = (int16_t)tp.y - (int16_t)state.startY;
-                    float   tdist = std::sqrt((float)(tdx*tdx + tdy*tdy));
-                    if (tdist < (float)(moveThreshold * 3)) {
-                        state.holdFired = true;
-                        TouchEventData ev{};
-                        ev.event = TouchEvent::HOLD;
-                        ev.point = tp;
-                        ev.dx = 0; ev.dy = 0;
-                        ev.duration_ms = dur;
-                        fireEvent(ev);
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Interrupt wait ────────────────────────────────────────────────────────
-
-    bool waitForInterrupt(int timeout_ms) {
-        struct epoll_event ev;
-        int ret = epoll_wait(epollFd, &ev, 1, timeout_ms);
-        if (ret <= 0) return false;
-        char buf; lseek(intFd, 0, SEEK_SET); ::read(intFd, &buf, 1);
-        return true;
-    }
-
-    // ── Poll loop ─────────────────────────────────────────────────────────────
-
-    void pollLoop() {
-        GTPoint points[GT911_MAX_CONTACTS];
-
-        while (running) {
-            bool triggered = waitForInterrupt(20);
-            int count = 0;
-            if (triggered)
-                count = readRawTouches(points);
-            processTouches(points, count);
-        }
-
-        // Flush remaining tracked fingers as releases
-        auto now = std::chrono::steady_clock::now();
-        for (auto& [id, state] : tracked) {
-            uint32_t dur = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - state.pressTime).count();
-            TouchEventData ev{};
-            ev.event = TouchEvent::RELEASE;
-            ev.point = state.point;
-            ev.dx = 0; ev.dy = 0;
-            ev.duration_ms = dur;
-            fireEvent(ev);
-        }
-        tracked.clear();
-    }
+    int  readRawTouches(GTPoint* points);
+    void fireEvent(const TouchEventData& ev);
+    void processTouches(GTPoint* gtPoints, int count);
+    bool waitForInterrupt(int timeout_ms);
+    void pollLoop();
 
 public:
+    GT911(I2CBus& bus, int int_pin, int rst_pin, uint8_t address = GT911_I2C_ADDR_BA);
 
-    // int_pin, rst_pin = BCM numbers, chip offset 512 handled internally
-    GT911(I2CBus& bus, int int_pin, int rst_pin, uint8_t address = GT911_I2C_ADDR_BA)
-        : i2c(bus), addr(address),
-          intPin(int_pin, true),   // output for reset sequence
-          rstPin(rst_pin, true),
-          epollFd(-1), intFd(-1)
-    {
-        i2c.setAddr(addr);
-        hardReset();
+    GTInfo*   readInfo();
+    GTConfig* readConfig();
+    bool      writeConfig();
+    void      setResolution(uint16_t w, uint16_t h);
 
-        // Switch INT to input after reset for interrupt detection
-        {
-            std::string intBase = "/sys/class/gpio/gpio" + std::to_string(512 + int_pin);
-            std::ofstream dir(intBase + "/direction");
-            dir << "in";
-        }
+    void setMoveThreshold(uint16_t px);
+    void setHoldDuration(uint32_t ms);
+    void setDebounceMs(uint32_t ms);
 
-        setupEdgeInterrupt(512 + int_pin);
-    }
+    void onAny    (EventCallback cb);
+    void onPress  (EventCallback cb);
+    void onRelease(EventCallback cb);
+    void onMove   (EventCallback cb);
+    void onHold   (EventCallback cb);
 
-    // ── Info / config ─────────────────────────────────────────────────────────
+    void startPolling();
+    void stopPolling();
 
-    GTInfo* readInfo() {
-        i2c.setAddr(addr);
-        readBytes(GT911_REG_DATA, (uint8_t*)&_info, sizeof(_info));
-        return &_info;
-    }
-
-    GTConfig* readConfig() {
-        i2c.setAddr(addr);
-        readBytes(GT911_REG_CFG, (uint8_t*)&_config, sizeof(_config));
-        if (readChecksum() == calcChecksum((uint8_t*)&_config, sizeof(_config))) {
-            _configLoaded = true;
-            return &_config;
-        }
-        return nullptr;
-    }
-
-    bool writeConfig() {
-        if (!_configLoaded) return false;
-        i2c.setAddr(addr);
-        uint8_t checksum = calcChecksum((uint8_t*)&_config, sizeof(_config));
-        if (readChecksum() != checksum) {
-            writeBytes(GT911_REG_CFG, (uint8_t*)&_config, sizeof(_config));
-            uint8_t buf[2] = {checksum, 1};
-            writeBytes(GT911_REG_CHECKSUM, buf, 2);
-            return true;
-        }
-        return false;
-    }
-
-    // Set display resolution — writes to GT911 config registers
-    void setResolution(uint16_t w, uint16_t h) {
-        i2c.setAddr(addr);
-        // Write X/Y resolution directly to config registers
-        uint8_t xbuf[2] = {(uint8_t)(w & 0xFF), (uint8_t)(w >> 8)};
-        uint8_t ybuf[2] = {(uint8_t)(h & 0xFF), (uint8_t)(h >> 8)};
-        writeBytes(0x8048, xbuf, 2);
-        writeBytes(0x804A, ybuf, 2);
-        // Trigger soft reset to apply
-        writeReg(0x8040, 0x00);
-    }
-
-    void setMoveThreshold(uint16_t px) { moveThreshold = px; }
-    void setHoldDuration(uint32_t ms)  { holdMs = ms; }
-
-    // ── Callbacks ─────────────────────────────────────────────────────────────
-
-    void onAny    (EventCallback cb) { std::lock_guard<std::mutex> l(cbMutex); onAnyCallback     = cb; }
-    void onPress  (EventCallback cb) { std::lock_guard<std::mutex> l(cbMutex); onPressCallback   = cb; }
-    void onRelease(EventCallback cb) { std::lock_guard<std::mutex> l(cbMutex); onReleaseCallback = cb; }
-    void onMove   (EventCallback cb) { std::lock_guard<std::mutex> l(cbMutex); onMoveCallback    = cb; }
-    void onHold   (EventCallback cb) { std::lock_guard<std::mutex> l(cbMutex); onHoldCallback    = cb; }
-
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
-
-    void startPolling() {
-        running    = true;
-        pollThread = std::thread(&GT911::pollLoop, this);
-    }
-
-    void stopPolling() {
-        running = false;
-        if (pollThread.joinable()) pollThread.join();
-    }
-
-    ~GT911() {
-        stopPolling();
-        if (intFd >= 0)   close(intFd);
-        if (epollFd >= 0) close(epollFd);
-    }
+    ~GT911();
 };

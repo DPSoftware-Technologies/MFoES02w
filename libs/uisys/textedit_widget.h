@@ -17,108 +17,71 @@ private:
     int x, y, w, h;
     std::string text;
     std::string placeholder;
-    bool focused    = false;
+    bool focused     = false;
     bool numericOnly = false;
-    size_t maxLen   = 64;
+    size_t maxLen    = 64;
 
     Callback onChange;
     Callback onConfirm;
     Font     font;
 
-    KeyboardWidget* keyboard = nullptr;  // shared keyboard instance
+    KeyboardWidget* keyboard = nullptr;
 
-    uint16_t colBg          = 0x0861;
-    uint16_t colBgFocused   = 0x18C3;
-    uint16_t colBorder      = 0x8C71;
-    uint16_t colBorderFocus = 0x07E0;
-    uint16_t colText        = 0xFFFF;
-    uint16_t colPlaceholder = 0x8C71;
-    uint16_t colCursor      = 0x07E0;
+    uint32_t colBg          = 0xFF080C08u;  // was 0x0861  →  rgb(8,12,8)
+    uint32_t colBgFocused   = 0xFF181818u;  // was 0x18C3  →  rgb(24,24,24)
+    uint32_t colBorder      = 0xFF8C8E8Cu;  // was 0x8C71  →  rgb(140,142,140)
+    uint32_t colBorderFocus = 0xFF00FF00u;  // was 0x07E0  →  rgb(0,255,0)
+    uint32_t colText        = 0xFFFFFFFFu;  // was 0xFFFF  →  rgb(255,255,255)
+    uint32_t colPlaceholder = 0xFF8C8E8Cu;  // was 0x8C71  →  rgb(140,142,140)
+    uint32_t colCursor      = 0xFF00FF00u;  // was 0x07E0  →  rgb(0,255,0)
 
     // Cursor blink state (driven by draw call count)
     mutable int blinkCounter = 0;
 
-    bool hitTest(int tx, int ty) const {
-        return tx >= x && tx <= x+w && ty >= y && ty <= y+h;
-    }
+    bool hitTest(int tx, int ty) const;
 
-bool visible_widget = true;
+    bool visible_widget = true;
 
 public:
-    TextEditWidget() : x(0), y(0), w(200), h(40) {}
-
+    TextEditWidget();
     TextEditWidget(int x, int y, int w, int h,
                    const std::string& placeholder = "",
                    KeyboardWidget* keyboard = nullptr,
                    bool numericOnly = false,
-                   Font font = Font::Medium())
-        : x(x), y(y), w(w), h(h),
-          placeholder(placeholder), numericOnly(numericOnly),
-          font(font), keyboard(keyboard) {}
+                   Font font = Font::Medium());
 
-        void setVisible(bool v) { visible_widget = v; }
-    bool isVisible()   const { return visible_widget; }
+    void setVisible(bool v);
+    bool isVisible() const;
 
-    void setFont(const Font& f)         { font = f; }
-    void setKeyboard(KeyboardWidget* kb) { keyboard = kb; }
-    void setMaxLen(size_t len)           { maxLen = len; }
-    void setNumericOnly(bool n)          { numericOnly = n; }
-    void setPlaceholder(const std::string& p) { placeholder = p; }
-    void setText(const std::string& t)   { text = t.substr(0, maxLen); }
-    void setCallback(Callback cb)        { onChange = cb; }
-    void setOnConfirm(Callback cb)       { onConfirm = cb; }
+    void setFont(const Font& f);
+    void setKeyboard(KeyboardWidget* kb);
+    void setMaxLen(size_t len);
+    void setNumericOnly(bool n);
+    void setPlaceholder(const std::string& p);
+    void setText(const std::string& t);
+    void setCallback(Callback cb);
+    void setOnConfirm(Callback cb);
+    void setColors(uint32_t bg, uint32_t bgFocus, uint32_t border,
+                   uint32_t borderFocus, uint32_t text, uint32_t placeholder);
 
-    void setColors(uint16_t bg, uint16_t bgFocus, uint16_t border,
-                   uint16_t borderFocus, uint16_t text, uint16_t placeholder) {
-        colBg=bg; colBgFocused=bgFocus; colBorder=border;
-        colBorderFocus=borderFocus; colText=text; colPlaceholder=placeholder;
-    }
+    const std::string& getText()    const;
+    bool               isFocused()  const;
 
-    const std::string& getText() const { return text; }
-    bool isFocused()             const { return focused; }
+    void focus();
+    void unfocus();
 
-    void focus() {
-        focused = true;
-        if (keyboard) {
-            keyboard->setCallback([this](const std::string& t) {
-                text = t;
-                if (onChange) onChange(text);
-                // NOTE: never call unfocus() from here — causes re-entry into hide()
-            });
-            keyboard->setMaxLen(maxLen);
-            keyboard->showWithText(text, numericOnly);
-        }
-    }
+    void handleEvent(const TouchEventData& e);
 
-    void unfocus() {
-        if (!focused) return;  // guard re-entry
-        focused = false;
-        if (keyboard && keyboard->isVisible()) {
-            keyboard->setCallback(nullptr);  // clear first to prevent re-entry
-            keyboard->hide();
-        }
-        if (onConfirm) onConfirm(text);
-    }
-
-    void handleEvent(const TouchEventData& e) {
-        if (!visible_widget) return;
-        if (e.event == TouchEvent::PRESS) {
-            if (hitTest(e.point.x, e.point.y)) {
-                if (!focused) focus();
-            } else {
-                if (focused) unfocus();
-            }
-        }
-    }
+    //  Draw — templated, must remain in header 
 
     template<typename GFX>
     void draw(GFX& gfx) const {
         if (!visible_widget) return;
-        uint16_t bg  = focused ? colBgFocused : colBg;
-        uint16_t brd = focused ? colBorderFocus : colBorder;
+
+        uint32_t bg  = focused ? colBgFocused : colBg;
+        uint32_t brd = focused ? colBorderFocus : colBorder;
 
         gfx.fillRect(x, y, w, h, bg);
-        // Double border when focused
         gfx.drawRect(x, y, w, h, brd);
         if (focused) gfx.drawRect(x+1, y+1, w-2, h-2, brd);
 
@@ -134,7 +97,7 @@ public:
             gfx.writeText(placeholder.c_str());
         } else {
             // Text — clip to box width
-            int availW   = w - 16 - font.charW(); // leave room for cursor
+            int availW   = w - 16 - font.charW();  // leave room for cursor
             int maxChars = availW / font.charW();
             std::string display = text;
             if ((int)display.size() > maxChars)

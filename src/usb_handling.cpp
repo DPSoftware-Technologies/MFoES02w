@@ -10,14 +10,31 @@ void App::usbLoop() {
     uint32_t tile_buf_size = sizeof(TileUpdateHeader) + DTS_TILE_SIZE;
     uint8_t *buf = new uint8_t[tile_buf_size];
 
-    while (true) {
+    // if not connect in 15s = timeout
+    int wait_elapsed = 0;          // seconds waited without connection
+    bool timeoutShown = false;     // only show the dialog once per disconnect
+
+    while (running) {
         if (!usbdc.open(USBD_CHAN_AUTO)) {
-            snprintf(statusMsg, sizeof(statusMsg), "USB: waiting...");
-            sleep(2);
+            snprintf(statusMsg, sizeof(statusMsg), "USB: waiting... (%ds)", wait_elapsed);
+            sleep(1);
+            wait_elapsed += 1;
+
+            if (wait_elapsed >= 15 && !timeoutShown) {
+                timeoutShown = true;
+                postAction([this]() {
+                    defer([this]() {
+                        ui.quickFireDialog(SCREEN_W, SCREEN_H,
+                            "USB Timeout",
+                            "No USB device connected\nafter 15 seconds. Please restart or re-plug.",
+                            uisys::DialogMode::Notice,
+                            uisys::DialogIcon::Error);
+                    });
+                });
+            }
             continue;
         }
-        snprintf(statusMsg, sizeof(statusMsg),
-                 "USB: ch%d connected", usbdc.get_channel());
+        snprintf(statusMsg, sizeof(statusMsg), "USB: ch%d connected", usbdc.get_channel());
 
         while (usbdc.is_connected()) {
             int p = usbdc.poll(100);
@@ -27,8 +44,14 @@ void App::usbLoop() {
             if (r < 1) break;
 
             // Update general data
-            if (buf[0] == MSG_UPDATE_VALUE && r >= 17) {
-                memcpy(&cvdata, buf, sizeof(CValue));
+            if (buf[0] == MSG_UPDATE_VALUE) {
+                snprintf(statusMsg, sizeof(statusMsg), "CV: Updating...");
+                if (r >= sizeof(CValue)) {
+                    memcpy(&cvdata, buf, sizeof(CValue));
+                    snprintf(statusMsg, sizeof(statusMsg), "CV: Updated");
+                } else {
+                    snprintf(statusMsg, sizeof(statusMsg), "CV: Update Error");
+                }
             }
 
             // update TILE

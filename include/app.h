@@ -13,6 +13,8 @@
 #include "uisys/manager.h"
 #include <unistd.h>
 
+#define APP_FPS 60
+
 #define SCREEN_W     1280
 #define SCREEN_H     720
 #define FRAME_PIXELS (SCREEN_W * SCREEN_H)
@@ -59,7 +61,7 @@ struct TileUpdateHeader {
     uint16_t tw, th;
 };  // 7 bytes
 
-struct CValue {
+struct CValue { // Custom Values
     uint8_t  type;
     uint16_t v1;
     uint16_t v2;
@@ -81,7 +83,13 @@ class App {
         ~App();
         void init();
         int  run();
+        void stop();
 
+        void defer(std::function<void()> fn) { _pendingAction = fn; }
+        void postAction(std::function<void()> fn) {
+            std::lock_guard<std::mutex> lock(_actionQueueMutex);
+            _actionQueue.push(fn);
+        }
     private:
         LinuxGFX   gfx;
         I2CBus     i2c;
@@ -97,21 +105,38 @@ class App {
         pthread_t usb_thread;
         static void* usbThreadFunc(void* arg);
 
+        bool hasFrame = false;
+        int sw = gfx.width();
+        int sh = gfx.height();
+        int fps_us = 1000000 / APP_FPS;
+
         void usbLoop();
         void initSysUI();
         void initDemoUI();
         void initSidebarBTNs();
-        void renderAbout(int sw, int sh);
+        void renderAbout();
+        void renderDataInInfo();
+        void render();
+        void process();
+        void inputHandle();
 
         uint16_t frameBufA[FRAME_PIXELS];  // USB thread writes
         uint16_t frameBufB[FRAME_PIXELS];  // render thread reads
-        bool     frameReady;
+        bool frameReady;
         pthread_mutex_t frameMutex;
+        
         std::queue<TouchEventData> touchQueue;
-        std::mutex                 touchQueueMutex;
+        std::mutex touchQueueMutex;
 
         bool show_about = false;
         bool hide_ui = false;
+        bool show_data_in = false;
+
+        bool running = true;
+
+        std::function<void()> _pendingAction; 
+        std::queue<std::function<void()>> _actionQueue;
+        std::mutex _actionQueueMutex;
 };
 
 static const unsigned char adaf_logo_bmp[] = {

@@ -17,9 +17,9 @@
 #include <poll.h>
 
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // Configuration
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 #define FFS_PATH        "/dev/ffs-mfoes"
 #define SOCK_PATH       "/var/run/usbd.sock"
 #define MAX_CHANNELS    32
@@ -34,9 +34,9 @@
 #define FLAG_ACK        0x03
 #define FLAG_ERROR      0x04
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // Frame header (12 bytes, packed)
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 struct __attribute__((packed)) FrameHeader {
     uint32_t magic;      // FRAME_MAGIC
     uint8_t  channel;    // channel id
@@ -47,9 +47,9 @@ struct __attribute__((packed)) FrameHeader {
 
 static_assert(sizeof(FrameHeader) == 12, "FrameHeader must be 12 bytes");
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // Ring buffer (lock-free SPSC)
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 struct RingBuffer {
     uint8_t  *buf;
     uint32_t  cap;
@@ -127,9 +127,9 @@ struct RingBuffer {
     }
 };
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // Channel
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 struct Channel {
     int      sock_fd;       // unix socket to app
     uint8_t  id;
@@ -155,18 +155,18 @@ struct Channel {
     }
 };
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // Globals
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 static Channel  channels[MAX_CHANNELS];
 static pthread_mutex_t channels_lock = PTHREAD_MUTEX_INITIALIZER;
 static int ep0_fd = -1, ep1_fd = -1, ep2_fd = -1;
 static volatile bool g_running = true;
 static int g_epoll_fd = -1;
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // USB Descriptors (FS + HS, bulk OUT ep1 + bulk IN ep2)
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 static const struct {
     struct usb_functionfs_descs_head_v2 header;
     __le32 fs_count;
@@ -248,9 +248,9 @@ static const struct {
     .lang0 = { htole16(0x0409), "MFOES-MUX" },
 };
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // Helpers: write_all / read_all (retry on EINTR)
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 static ssize_t write_all(int fd, const void *buf, size_t len) {
     size_t sent = 0;
     while (sent < len) {
@@ -285,10 +285,10 @@ static ssize_t read_all(int fd, void *buf, size_t len) {
     return (ssize_t)got;
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // Send a frame over USB (ep2 = bulk IN)
 // Only one writer thread should call this — guarded by caller
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 static pthread_mutex_t usb_tx_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static bool usb_send_frame(uint8_t channel, uint8_t flags,
@@ -308,9 +308,9 @@ static bool usb_send_frame(uint8_t channel, uint8_t flags,
     return ok;
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // Per-channel TX thread: drains tx_ring → USB
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 struct TxThreadArg { uint8_t channel_id; };
 
 static void *channel_tx_thread(void *arg) {
@@ -344,9 +344,9 @@ static void *channel_tx_thread(void *arg) {
     return nullptr;
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // Per-channel RX dispatch: rx_ring → unix socket
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 struct RxThreadArg { uint8_t channel_id; };
 
 static void *channel_rx_thread(void *arg) {
@@ -403,9 +403,9 @@ static void *channel_rx_thread(void *arg) {
     return nullptr;
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // App socket reader: read from unix socket → tx_ring
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 struct AppReaderArg { uint8_t channel_id; };
 
 static void *app_reader_thread(void *arg) {
@@ -444,9 +444,9 @@ done:
     return nullptr;
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // USB RX thread: reads from ep1, dispatches frames to channel rx_rings
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 static void *usb_rx_thread(void *) {
     fprintf(stderr, "[usb_rx] thread started\n");
 
@@ -531,9 +531,9 @@ static void *usb_rx_thread(void *) {
     return nullptr;
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // IPC accept thread: accepts new app connections on unix socket
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 static void *ipc_accept_thread(void *arg) {
     int srv = *(int*)arg;
 
@@ -598,9 +598,9 @@ static void *ipc_accept_thread(void *arg) {
     return nullptr;
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // ep0 event thread
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 static void *ep0_thread(void *) {
     struct usb_functionfs_event ev;
     while (g_running) {
@@ -644,9 +644,9 @@ static void *ep0_thread(void *) {
 
 static void sig_handler(int) { g_running = false; }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 // main
-// ──────────────────────────────────────────────────────────────────────────────
+// 
 int main(int argc, char *argv[]) {
     signal(SIGTERM, sig_handler);
     signal(SIGINT,  sig_handler);
@@ -654,14 +654,14 @@ int main(int argc, char *argv[]) {
 
     fprintf(stderr, "[usbd] starting\n");
 
-    // ── Init channel array ──────────────────────────────────────────────────
+    //  Init channel array 
     memset(channels, 0, sizeof(channels));
     for (int i = 0; i < MAX_CHANNELS; i++) {
         channels[i].active  = false;
         channels[i].sock_fd = -1;
     }
 
-    // ── Open FunctionFS ─────────────────────────────────────────────────────
+    //  Open FunctionFS 
     ep0_fd = open(FFS_PATH "/ep0", O_RDWR);
     if (ep0_fd < 0) { perror("open ep0"); return 1; }
 
@@ -705,7 +705,7 @@ int main(int argc, char *argv[]) {
     fl = fcntl(ep2_fd, F_GETFL); fcntl(ep2_fd, F_SETFL, fl & ~O_NONBLOCK);
     fprintf(stderr, "[usbd] endpoints open (blocking)\n");
 
-    // ── Unix socket ─────────────────────────────────────────────────────────
+    //  Unix socket 
     unlink(SOCK_PATH);
     int srv = socket(AF_UNIX, SOCK_STREAM, 0);
     if (srv < 0) { perror("socket"); return 1; }
@@ -720,7 +720,7 @@ int main(int argc, char *argv[]) {
     if (listen(srv, 16) < 0) { perror("listen"); return 1; }
     fprintf(stderr, "[usbd] IPC socket ready at %s\n", SOCK_PATH);
 
-    // ── Spawn threads ───────────────────────────────────────────────────────
+    //  Spawn threads 
     pthread_t t;
 
     pthread_create(&t, nullptr, ep0_thread, nullptr); pthread_detach(t);

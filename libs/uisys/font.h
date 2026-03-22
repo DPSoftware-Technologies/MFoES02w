@@ -1,19 +1,8 @@
 #pragma once
 #include <cstdint>
+#include <GFX.h>
 
 namespace uisys {
-
-// ─── Font descriptor ──────────────────────────────────────────────────────────
-//
-// Wraps GFX font selection. GFX libraries (Adafruit-style) use:
-//   gfx.setTextSize(scale)          — 1=6x8px, 2=12x16px, 3=18x24px ...
-//   gfx.setFont(const GFXfont*)     — custom bitmap font (nullptr = default)
-//
-// Usage:
-//   uisys::Font f = uisys::Font::Size(2);         // built-in 2x scale
-//   uisys::Font f = uisys::Font::Custom(&myFont); // custom GFX font
-//   f.apply(gfx);                                 // apply to GFX context
-
 struct Font {
     uint8_t         scale  = 1;       // text size multiplier (1-4)
     const void*     gfxFont = nullptr; // GFXfont* — null = built-in
@@ -22,7 +11,7 @@ struct Font {
     int charW() const { return 6 * scale; }   // default font: 6px wide
     int charH() const { return 8 * scale; }   // default font: 8px tall
 
-    // ── Presets ───────────────────────────────────────────────────────────────
+    //  Presets 
 
     static Font Size(uint8_t s) {
         Font f; f.scale = s; return f;
@@ -37,7 +26,7 @@ struct Font {
     static Font Large()  { return Size(3); }
     static Font Huge()   { return Size(4); }
 
-    // ── Apply to GFX context ──────────────────────────────────────────────────
+    //  Apply to GFX context 
 
     template<typename GFX>
     void apply(GFX& gfx) const {

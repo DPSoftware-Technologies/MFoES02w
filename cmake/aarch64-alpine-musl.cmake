@@ -11,16 +11,16 @@ find_program(CMAKE_STRIP        ${CROSS_TRIPLE}-strip  )
 set(CMAKE_EXE_LINKER_FLAGS 
     "${CMAKE_EXE_LINKER_FLAGS} -L/opt/alpine-aarch64-sysroot/usr/lib -Wl,-rpath-link,/opt/alpine-aarch64-sysroot/usr/lib -Wl,-rpath-link,/opt/alpine-aarch64-sysroot/lib -lpthread")
     
-# ── Alpine aarch64 sysroot ────────────────────────────────────────────────────
+#  Alpine aarch64 sysroot 
 set(ALPINE_SYSROOT "/opt/alpine-aarch64-sysroot")
 set(CMAKE_FIND_ROOT_PATH "${ALPINE_SYSROOT}")
 
-# ── pkg-config pointing at Alpine sysroot ────────────────────────────────────
+#  pkg-config pointing at Alpine sysroot 
 set(ENV{PKG_CONFIG_PATH}        "${ALPINE_SYSROOT}/usr/lib/pkgconfig")
 set(ENV{PKG_CONFIG_LIBDIR}      "${ALPINE_SYSROOT}/usr/lib/pkgconfig")
 set(ENV{PKG_CONFIG_SYSROOT_DIR} "${ALPINE_SYSROOT}")
 
-# ── Search paths ──────────────────────────────────────────────────────────────
+#  Search paths 
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)

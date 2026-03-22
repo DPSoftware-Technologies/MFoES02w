@@ -1,29 +1,110 @@
 #include "app.h"
 
+void App::render() {
+    if (hasFrame) {
+        int ox = (sw - SCREEN_W) / 2;
+        int oy = (sh - SCREEN_H) / 2;
+        gfx.drawRGB565Bitmap(ox, oy, frameBufB, SCREEN_W, SCREEN_H);
+    } else {
+        gfx.fillScreen(GFX_BLACK);
+    }
+
+    gfx.setCursor(10, 10);
+    gfx.setTextColor(0xFFFFFFFF);
+    gfx.setTextSize(1);
+    pthread_mutex_lock(&frameMutex);
+    gfx.writeText(statusMsg);
+    pthread_mutex_unlock(&frameMutex);
+
+    if (show_data_in) renderDataInInfo();
+    if (show_about) renderAbout();
+
+    if (!hide_ui) ui.draw(gfx);
+
+    gfx.swapBuffers();
+}
+
 void App::initSysUI() {
-    ui.addButton("quit", 50, 50, 180, 60, "QUIT", uisys::ButtonMode::TRIGGER,
+    ui.addButton("quit", 50, 50, 180, 60, "Exit MFD", uisys::ButtonMode::TRIGGER,
         [this](int s){
-            pthread_join(usb_thread, nullptr);
-            exit(0);
+            defer([this]{
+                int r = ui.quickFireDialog(SCREEN_W, SCREEN_H,
+                    "Exit the MFD",
+                    "Sure to stop this MFD app? ",
+                    uisys::DialogMode::YesNo,
+                    uisys::DialogIcon::Warning,
+                    0, false, "No", "Yes");
+                ui.getButton("quit")->setPressed(false);
+                if (r == uisys::DialogResult::No) {
+                    stop();
+                }
+            });
         },
         uisys::ButtonTheme::Danger());
 
-    ui.addButton("halt", 250, 50, 180, 60, "Halt", uisys::ButtonMode::TRIGGER,
+    ui.addButton("halt", 250, 50, 180, 60, "Shutdown", uisys::ButtonMode::TRIGGER,
         [this](int s){
-            system("halt");
+            defer([this]{
+                int r = ui.quickFireDialog(SCREEN_W, SCREEN_H,
+                    "Shutdown",
+                    "Sure to shutdown? For power up, short GPIO3 to GND.",
+                    uisys::DialogMode::YesNo,
+                    uisys::DialogIcon::Warning,
+                    0, false, "No", "Yes");
+                ui.getButton("halt")->setPressed(false);
+                if (r == uisys::DialogResult::No) {
+                    auto& dlg = ui.addDialog("__halt__", SCREEN_W, SCREEN_H,
+                        "Shutting down...", "The system will power off now.",
+                        uisys::DialogMode::Notice,
+                        uisys::DialogIcon::Info);
+                    dlg.hideButtons();
+                    dlg.fire();
+                    render();
+                    system("halt");
+                }
+            });
         },
         uisys::ButtonTheme::Danger());
 
     ui.addButton("hideui", 450, 50, 180, 60, "Hide All UI", uisys::ButtonMode::TRIGGER,
         [this](int s){
-            show_about = false;
-            hide_ui = true;
+            defer([this]{
+                int r = ui.quickFireDialog(SCREEN_W, SCREEN_H,
+                    "Hide UI",
+                    "Sure to Hide UI? You can't restore the UI back until restart.",
+                    uisys::DialogMode::YesNo,
+                    uisys::DialogIcon::Warning,
+                    0, false, "No", "Yes");
+                ui.getButton("hideui")->setPressed(false);
+                if (r == uisys::DialogResult::No) {
+                    show_about = false;
+                    hide_ui = true;
+                }
+            });
         },
         uisys::ButtonTheme::Danger());
     
     ui.addButton("restart", 650, 50, 180, 60, "Restart", uisys::ButtonMode::TRIGGER,
         [this](int s){
-            system("reboot");
+            defer([this]{
+                int r = ui.quickFireDialog(SCREEN_W, SCREEN_H,
+                    "Restart",
+                    "Sure to restart?",
+                    uisys::DialogMode::YesNo,
+                    uisys::DialogIcon::Warning,
+                    0, false, "No", "Yes");
+                ui.getButton("restart")->setPressed(false);
+                if (r == uisys::DialogResult::No) {
+                    auto& dlg = ui.addDialog("__rebooting__", SCREEN_W, SCREEN_H,
+                        "Restarting...", "The system will restart now now.",
+                        uisys::DialogMode::Notice,
+                        uisys::DialogIcon::Info);
+                    dlg.hideButtons();
+                    dlg.fire();
+                    render();
+                    system("reboot");
+                }
+            });
         },
         uisys::ButtonTheme::Danger());
 
@@ -98,13 +179,19 @@ void App::initDemoUI() {
     ui.getSpinBox("gain2")->setVisible(false);
 }
 void App::initSidebarBTNs() {
-    ui.addButton("sinfo", 1075, 440, 180, 50, "Show Info",   uisys::ButtonMode::TOGGLE,
+    ui.addButton("sdata", 1075, 360, 180, 50, "Show Data", uisys::ButtonMode::TOGGLE,
+        [this](int s){
+            show_data_in = (s == 1) ? true : false;
+        },
+        uisys::ButtonTheme::Military());
+
+    ui.addButton("sinfo", 1075, 440, 180, 50, "Show Info", uisys::ButtonMode::TOGGLE,
         [this](int s){
             show_about = (s == 1) ? true : false;
         },
         uisys::ButtonTheme::Military());
 
-    ui.addButton("ssui", 1075, 520, 180, 50, "Show System UI",   uisys::ButtonMode::TOGGLE,
+    ui.addButton("ssui", 1075, 520, 180, 50, "Show System UI", uisys::ButtonMode::TOGGLE,
         [this](int s){
             bool state = (s == 1) ? true : false;
 
@@ -115,7 +202,7 @@ void App::initSidebarBTNs() {
         },
         uisys::ButtonTheme::Military());
 
-    ui.addButton("sdui", 1075, 600, 180, 50, "Show Demo UI",   uisys::ButtonMode::TOGGLE,
+    ui.addButton("sdui", 1075, 600, 180, 50, "Show Demo UI", uisys::ButtonMode::TOGGLE,
         [this](int s){
             bool state = (s == 1) ? true : false;
             ui.getComboBox("mode")->setVisible(state);
@@ -146,8 +233,8 @@ void App::initSidebarBTNs() {
         uisys::ButtonTheme::Military());
 }
 
-void App::renderAbout(int sw, int sh) {
-    gfx.setTextColor(gfx.color565(0xFF, 0xFF, 0xFF));
+void App::renderAbout() {
+    gfx.setTextColor(0xFFFFFFFF);
     gfx.setTextSize(4);
     gfx.setCursor(20, sh-150);
     gfx.writeText("MFoES for RPI0w2");
@@ -161,5 +248,26 @@ void App::renderAbout(int sw, int sh) {
     gfx.setCursor(720, sh-135);
     gfx.setTextSize(2);
     gfx.writeText("Adafruit GFX Compatible");
-    gfx.drawBitmap(795, sh-100, adaf_logo_bmp, 115, 32, 0xFFFFFF);
+    gfx.drawBitmap(795, sh-100, adaf_logo_bmp, 115, 32, 0xFFFFFFFFu);
+}
+
+void App::renderDataInInfo() {
+    gfx.setTextColor(0xFFFFFFFF);
+    gfx.setTextSize(2);
+    
+    uint16_t values[8];
+
+    values[0] = cvdata.v1;
+    values[1] = cvdata.v2;
+    values[2] = cvdata.v3;
+    values[3] = cvdata.v4;
+    values[4] = cvdata.v5;
+    values[5] = cvdata.v6;
+    values[6] = cvdata.v7;
+    values[7] = cvdata.v8;
+
+    for (int i = 0; i < 8; i++) {
+        gfx.setCursor(20, 50 + (i * 15));
+        gfx.writeTextF("CV%d: %u", i + 1, values[i]);
+    }
 }

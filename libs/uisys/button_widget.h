@@ -7,7 +7,7 @@
 
 namespace uisys {
 
-// ─── Button mode ─────────────────────────────────────────────────────────────
+//  Button mode 
 
 enum class ButtonMode {
     TRIGGER,       // fires once on press
@@ -16,7 +16,7 @@ enum class ButtonMode {
     TRIGGER_HOLD,  // fires on press AND separately on hold
 };
 
-// ─── Callback state values ────────────────────────────────────────────────────
+//  Callback state values 
 //
 // Passed as int to the callback so one callback handles all cases:
 //
@@ -49,40 +49,23 @@ namespace ButtonState {
     constexpr int RELEASE     = 7;  // raw release
 }
 
-// ─── Theme ───────────────────────────────────────────────────────────────────
+//  Theme 
 
 struct ButtonTheme {
-    uint16_t colNormal    = 0x2104;
-    uint16_t colPressed   = 0x07E0;
-    uint16_t colToggleOn  = 0x001F;
-    uint16_t colHolding   = 0xFD20;  // orange — while hold is active
-    uint16_t colBorder    = 0xFFFF;
-    uint16_t colText      = 0xFFFF;
+    uint32_t colNormal   = 0xFF212021u;  // was 0x2104  →  rgb(33,32,33)
+    uint32_t colPressed  = 0xFF00FF00u;  // was 0x07E0  →  rgb(0,255,0)
+    uint32_t colToggleOn = 0xFF0000FFu;  // was 0x001F  →  rgb(0,0,255)
+    uint32_t colHolding  = 0xFFFFA600u;  // was 0xFD20  →  rgb(255,166,0)
+    uint32_t colBorder   = 0xFFFFFFFFu;  // was 0xFFFF  →  rgb(255,255,255)
+    uint32_t colText     = 0xFFFFFFFFu;  // was 0xFFFF  →  rgb(255,255,255)
 
-    static ButtonTheme Default()  { return {}; }
-    static ButtonTheme Danger()   {
-        ButtonTheme t;
-        t.colNormal=0x4000; t.colPressed=0xF800;
-        t.colToggleOn=0xF800; t.colHolding=0xFBE0;
-        return t;
-    }
-    static ButtonTheme Military() {
-        ButtonTheme t;
-        t.colNormal=0x2A00; t.colPressed=0x4C00;
-        t.colToggleOn=0x0400; t.colHolding=0x6300;
-        t.colBorder=0x8C71;
-        return t;
-    }
-    static ButtonTheme HUD() {
-        ButtonTheme t;
-        t.colNormal=0x0208; t.colPressed=0x07E0;
-        t.colToggleOn=0x07E0; t.colHolding=0xFD20;
-        t.colBorder=0x07E0; t.colText=0x07E0;
-        return t;
-    }
+    static ButtonTheme Default();
+    static ButtonTheme Danger();
+    static ButtonTheme Military();
+    static ButtonTheme HUD();
 };
 
-// ─── ButtonWidget ─────────────────────────────────────────────────────────────
+//  ButtonWidget 
 
 class ButtonWidget {
 public:
@@ -101,109 +84,48 @@ private:
     bool toggleState    = false;
     bool holdActive     = false;
 
-    bool hitTest(int tx, int ty) const {
-        return tx >= x && tx <= x+w && ty >= y && ty <= y+h;
-    }
-
-    void fire(int s) { if (onAction) onAction(s); }
+    bool hitTest(int tx, int ty) const;
+    void fire(int s);
 
 public:
-    ButtonWidget() : x(0), y(0), w(0), h(0), mode(ButtonMode::TRIGGER) {}
-
+    ButtonWidget();
     ButtonWidget(int x, int y, int w, int h,
                  const std::string& label, ButtonMode mode,
                  Callback cb = nullptr,
                  ButtonTheme theme = ButtonTheme::Default(),
-                 Font font = Font::Medium())
-        : x(x), y(y), w(w), h(h), label(label), mode(mode),
-          onAction(cb), theme(theme), font(font) {}
+                 Font font = Font::Medium());
 
-    // ── Setters ───────────────────────────────────────────────────────────────
+    //  Setters 
 
-    void setTheme(const ButtonTheme& t)              { theme = t; }
-    void setFont(const Font& f)                      { font  = f; }
-    void setCallback(Callback cb)                    { onAction = cb; }
-    void setLabel(const std::string& l)              { label = l; }
-    void setToggleState(bool s)                      { toggleState = s; }
-    void setBounds(int nx,int ny,int nw,int nh)      { x=nx;y=ny;w=nw;h=nh; }
-    void setVisible(bool v)                          { visible_widget = v; }
+    void setTheme(const ButtonTheme& t);
+    void setFont(const Font& f);
+    void setCallback(Callback cb);
+    void setLabel(const std::string& l);
+    void setToggleState(bool s);
+    void setPressed(bool s) { pressed = s; };
+    void setBounds(int nx, int ny, int nw, int nh);
+    void setVisible(bool v);
 
-    // ── Getters ───────────────────────────────────────────────────────────────
+    //  Getters 
 
-    bool isVisible()    const { return visible_widget; }
-    bool isPressed()    const { return pressed; }
-    bool isToggleOn()   const { return toggleState; }
-    bool isHoldActive() const { return holdActive; }
-    ButtonMode getMode() const { return mode; }
+    bool       isVisible()    const;
+    bool       isPressed()    const;
+    bool       isToggleOn()   const;
+    bool       isHoldActive() const;
+    ButtonMode getMode()      const;
 
-    // ── Event handler ─────────────────────────────────────────────────────────
+    //  Event handler 
 
-    void handleEvent(const TouchEventData& e) {
-        if (!visible_widget) return;
+    void handleEvent(const TouchEventData& e);
 
-        switch (e.event) {
-
-            case TouchEvent::PRESS:
-                if (!hitTest(e.point.x, e.point.y)) break;
-                pressed = true;
-
-                if (mode == ButtonMode::TRIGGER) {
-                    fire(ButtonState::TRIGGER);
-
-                } else if (mode == ButtonMode::TRIGGER_HOLD) {
-                    fire(ButtonState::TRIGGER);  // fires immediately on press
-
-                } else if (mode == ButtonMode::TOGGLE) {
-                    toggleState = !toggleState;
-                    fire(toggleState ? ButtonState::TOGGLE_ON : ButtonState::TOGGLE_OFF);
-                }
-                // HOLD: nothing fires on press alone
-                break;
-
-            case TouchEvent::HOLD:
-                if (!pressed || !hitTest(e.point.x, e.point.y)) break;
-
-                if ((mode == ButtonMode::HOLD || mode == ButtonMode::TRIGGER_HOLD)
-                    && !holdActive) {
-                    holdActive = true;
-                    fire(ButtonState::HOLD_START);
-                }
-                break;
-
-            case TouchEvent::MOVE:
-                if (!pressed) break;
-                if (!hitTest(e.point.x, e.point.y)) {
-                    // Finger left button area
-                    if ((mode == ButtonMode::HOLD || mode == ButtonMode::TRIGGER_HOLD)
-                        && holdActive) {
-                        holdActive = false;
-                        fire(ButtonState::HOLD_CANCEL);
-                    }
-                    pressed = false;
-                }
-                break;
-
-            case TouchEvent::RELEASE:
-                if (!pressed) break;
-                pressed = false;
-
-                if ((mode == ButtonMode::HOLD || mode == ButtonMode::TRIGGER_HOLD)
-                    && holdActive) {
-                    holdActive = false;
-                    fire(ButtonState::HOLD_END);
-                }
-                break;
-        }
-    }
-
-    // ── Draw ─────────────────────────────────────────────────────────────────
+    //  Draw — templated, must remain in header 
 
     template<typename GFX>
     void draw(GFX& gfx) const {
         if (!visible_widget) return;
 
         // Background color by state
-        uint16_t bg;
+        uint32_t bg;
         if (mode == ButtonMode::TOGGLE) {
             bg = toggleState ? theme.colToggleOn : theme.colNormal;
             if (pressed) bg = theme.colPressed;
@@ -236,7 +158,7 @@ public:
         gfx.writeText(label.c_str());
 
         // Mode indicator dot — top right corner
-        uint16_t dotCol = 0x0000;
+        uint32_t dotCol = GFX_BLACK;
         switch (mode) {
             case ButtonMode::TRIGGER:
                 dotCol = gfx.color565(0xFF, 0xFF, 0x00);  // yellow
@@ -252,7 +174,6 @@ public:
                     : gfx.color565(0x00, 0x40, 0x40);       // cyan dim
                 break;
             case ButtonMode::TRIGGER_HOLD:
-                // Split dot: half yellow (trigger) half orange (hold)
                 dotCol = holdActive
                     ? gfx.color565(0xFF, 0x80, 0x00)        // orange when holding
                     : gfx.color565(0xFF, 0xC0, 0x00);       // gold = both modes

@@ -8,5 +8,12 @@ int main(int argc, char* argv[]) {
     App app;
     app.init();
 
-    return app.run();
+    int code = app.run();
+
+    // destroy
+    delete &app;
+
+    system("clear > /dev/tty1"); // clear screen
+
+    return code;
 }

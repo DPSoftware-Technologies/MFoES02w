@@ -5,22 +5,22 @@ project(mfoes02w
     LANGUAGES CXX
 )
 
-# ── Standards ────────────────────────────────────────────────────────────────
+#  Standards 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# ── Output directories ────────────────────────────────────────────────────────
+#  Output directories 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# ── Options ───────────────────────────────────────────────────────────────────
+#  Options 
 option(STATIC_LINK    "Link statically (required for Alpine musl)" ON)
 option(ENABLE_TESTS   "Build unit tests"                           OFF)
 option(ENABLE_LOGGING "Enable debug logging"                       OFF)
 
-# ── Static linking for musl ───────────────────────────────────────────────────
+#  Static linking for musl 
 if(STATIC_LINK)
     # Link most things statically but NOT GPU/display libs
     add_link_options(
@@ -32,7 +32,7 @@ if(STATIC_LINK)
     message(STATUS "Static linking ENABLED (musl-compatible)")
 endif()
 
-# ── Compiler flags ────────────────────────────────────────────────────────────
+#  Compiler flags 
 add_compile_options(
     -w
     -Wall
@@ -58,7 +58,7 @@ add_subdirectory(libs/hwinterface)
 add_subdirectory(libs/uisys)
 
 
-# ── Subdirectories ────────────────────────────────────────────────────────────
+#  Subdirectories 
 add_executable(mfoes02w
     src/main.cpp
     src/usb_handling.cpp
@@ -83,12 +83,12 @@ target_link_libraries(mfoes02w
 )
 
 
-# ── Install rules ─────────────────────────────────────────────────────────────
+#  Install rules 
 install(TARGETS mfoes02w
     RUNTIME DESTINATION bin
 )
 
-# ── Summary ───────────────────────────────────────────────────────────────────
+#  Summary 
 message(STATUS "")
 message(STATUS "=== alpine-rpi-cmake build config ===")
 message(STATUS "  Target arch   : ${CMAKE_SYSTEM_PROCESSOR}")

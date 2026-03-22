@@ -1,55 +1,89 @@
 #pragma once
+#include "font.h"
+#include <vector>
+#include <deque>
+#include <string>
+#include <functional>
+#include <algorithm>
+#include <unistd.h>
+
+#include "keyboard_widget.h"
+
 #include "button_widget.h"
 #include "slider_widget.h"
 #include "dial_widget.h"
 #include "combobox_widget.h"
 #include "textedit_widget.h"
 #include "spinbox_widget.h"
-#include "keyboard_widget.h"
-#include "font.h"
-#include <vector>
-#include <deque>
-#include <string>
+#include "dialog_widget.h"
 
 namespace uisys {
 
 class Manager {
+public:
+    using PumpFn = std::function<void()>;
+
 private:
-    struct BtnEntry    { std::string id; ButtonWidget   widget; };
-    struct SldrEntry   { std::string id; SliderWidget   widget; };
-    struct DialEntry   { std::string id; DialWidget     widget; };
-    struct ComboEntry  { std::string id; ComboBoxWidget widget; };
-    struct EditEntry   { std::string id; TextEditWidget widget; };
-    struct SpinEntry   { std::string id; SpinBoxWidget  widget; };
+    struct BtnEntry   { std::string id; ButtonWidget   widget; };
+    struct SldrEntry  { std::string id; SliderWidget   widget; };
+    struct DialEntry  { std::string id; DialWidget     widget; };
+    struct ComboEntry { std::string id; ComboBoxWidget widget; };
+    struct EditEntry  { std::string id; TextEditWidget widget; };
+    struct SpinEntry  { std::string id; SpinBoxWidget  widget; };
 
     std::vector<BtnEntry>   _buttons;
     std::vector<SldrEntry>  _sliders;
     std::vector<DialEntry>  _dials;
     std::vector<ComboEntry> _combos;
-    std::deque<EditEntry>  _edits;  // deque: no realloc = stable string* pointers
-    std::deque<SpinEntry>  _spins;  // deque: no realloc = stable editBuf* pointers
+    std::deque<EditEntry>   _edits;  // deque: no realloc = stable string* pointers
+    std::deque<SpinEntry>   _spins;  // deque: no realloc = stable editBuf* pointers
 
-    // One shared keyboard instance — only one visible at a time
     KeyboardWidget _keyboard;
 
-    // Per-type finders — no templates, no deduction issues
-    BtnEntry*   findIn(std::vector<BtnEntry>&   v, const std::string& id) { for (auto& e:v) if(e.id==id) return &e; return nullptr; }
-    SldrEntry*  findIn(std::vector<SldrEntry>&  v, const std::string& id) { for (auto& e:v) if(e.id==id) return &e; return nullptr; }
-    DialEntry*  findIn(std::vector<DialEntry>&  v, const std::string& id) { for (auto& e:v) if(e.id==id) return &e; return nullptr; }
-    ComboEntry* findIn(std::vector<ComboEntry>& v, const std::string& id) { for (auto& e:v) if(e.id==id) return &e; return nullptr; }
-    EditEntry*  findIn(std::deque<EditEntry>&   v, const std::string& id) { for (auto& e:v) if(e.id==id) return &e; return nullptr; }
-    SpinEntry*  findIn(std::deque<SpinEntry>&   v, const std::string& id) { for (auto& e:v) if(e.id==id) return &e; return nullptr; }
+    // Dialogs — stored by id, drawn on top of everything
+    struct DlgEntry { std::string id; DialogWidget widget; };
+    std::deque<DlgEntry> _dialogs;
+
+    PumpFn _pumpFn;   ///< optional render+event pump for quickFireDialog
+
+    // Per-type finders — defined in manager.cpp
+    BtnEntry*   findIn(std::vector<BtnEntry>&   v, const std::string& id);
+    SldrEntry*  findIn(std::vector<SldrEntry>&  v, const std::string& id);
+    DialEntry*  findIn(std::vector<DialEntry>&  v, const std::string& id);
+    ComboEntry* findIn(std::vector<ComboEntry>& v, const std::string& id);
+    EditEntry*  findIn(std::deque<EditEntry>&   v, const std::string& id);
+    SpinEntry*  findIn(std::deque<SpinEntry>&   v, const std::string& id);
+    DlgEntry*   findIn(std::deque<DlgEntry>&    v, const std::string& id);
 
 public:
     // kb_x, kb_y, kb_w, kb_h — position/size of the shared keyboard
     Manager(int kb_x = 0, int kb_y = 400, int kb_w = 1280, int kb_h = 320,
-            Font kb_font = Font::Medium())
-        : _keyboard(kb_x, kb_y, kb_w, kb_h, kb_font)
-    {}
+            Font kb_font = Font::Medium());
 
-    KeyboardWidget& keyboard() { return _keyboard; }
+    KeyboardWidget& keyboard();
 
-    // ── Add ───────────────────────────────────────────────────────────────────
+    // ===== Pump function =====================================================
+    //
+    // quickFireDialog() needs to spin the render+event loop internally while
+    // it waits for the user to respond.  Register your frame loop here once
+    // at startup:
+    //
+    //   ui.setPumpFn([&](){
+    //       // poll touch events
+    //       TouchEventData e;
+    //       while (touch.poll(e)) ui.handleEvent(e);
+    //       // draw frame
+    //       gfx.fillScreen(GFX_BLACK);
+    //       ui.draw(gfx);
+    //       gfx.swapBuffers();
+    //   });
+    //
+    // If no pump function is set, quickFireDialog falls back to a simple
+    // busy-wait (dialog draws but no touch events — less ideal).
+    //
+    void setPumpFn(PumpFn fn) { _pumpFn = fn; }
+
+    //  Add 
 
     ButtonWidget& addButton(const std::string& id,
                             int x, int y, int w, int h,
@@ -122,34 +156,123 @@ public:
         return _spins.back().widget;
     }
 
-    // ── Lookup ────────────────────────────────────────────────────────────────
-
-    ButtonWidget*   getButton  (const std::string& id) { auto* e=findIn(_buttons,id); return e?&e->widget:nullptr; }
-    SliderWidget*   getSlider  (const std::string& id) { auto* e=findIn(_sliders,id); return e?&e->widget:nullptr; }
-    DialWidget*     getDial    (const std::string& id) { auto* e=findIn(_dials,  id); return e?&e->widget:nullptr; }
-    ComboBoxWidget* getComboBox(const std::string& id) { auto* e=findIn(_combos, id); return e?&e->widget:nullptr; }
-    TextEditWidget* getTextEdit(const std::string& id) { auto* e=findIn(_edits,  id); return e?&e->widget:nullptr; }
-    SpinBoxWidget*  getSpinBox (const std::string& id) { auto* e=findIn(_spins,  id); return e?&e->widget:nullptr; }
-
-    // ── Remove ────────────────────────────────────────────────────────────────
-
-    void clear() { _buttons.clear();_sliders.clear();_dials.clear();_combos.clear();_edits.clear();_spins.clear(); }
-
-    // ── Event routing ─────────────────────────────────────────────────────────
-    // Always route to keyboard first — it consumes events when visible
-
-    void handleEvent(const TouchEventData& e) {
-        // Keyboard gets first dibs — if it consumes the event, nothing else sees it
-        if (_keyboard.handleEvent(e)) return;
-        for (auto& en : _buttons) en.widget.handleEvent(e);
-        for (auto& en : _sliders) en.widget.handleEvent(e);
-        for (auto& en : _dials)   en.widget.handleEvent(e);
-        for (auto& en : _combos)  en.widget.handleEvent(e);
-        for (auto& en : _edits)   en.widget.handleEvent(e);
-        for (auto& en : _spins)   en.widget.handleEvent(e);
+    /// Add a dialog. screenW/H are used to auto-center it.
+    DialogWidget& addDialog(const std::string& id,
+                            int screenW, int screenH,
+                            const std::string& title,
+                            const std::string& description,
+                            DialogMode mode     = DialogMode::YesNoCancel,
+                            DialogIcon icon     = DialogIcon::Warning,
+                            DialogWidget::Callback cb = nullptr)
+    {
+        auto* e = findIn(_dialogs, id); if (e) return e->widget;
+        _dialogs.push_back({id, DialogWidget(screenW, screenH, title, description, mode, icon, cb)});
+        return _dialogs.back().widget;
     }
 
-    // ── Draw — keyboard drawn last so it renders on top ───────────────────────
+    DialogWidget* getDialog(const std::string& id) {
+        auto* e = findIn(_dialogs, id); return e ? &e->widget : nullptr;
+    }
+
+    /// Fire a dialog by id — shows it and dims the background
+    void fireDialog(const std::string& id) {
+        auto* d = getDialog(id); if (d) d->fire();
+    }
+
+    /// quickFireDialog — create, show, block until user responds, then clean up.
+    ///
+    /// Synchronous blocking call — spins the pump function until user responds.
+    /// Returns: DialogResult::Yes(2) / No(1) / Cancel(0)
+    ///
+    /// titleBarColor:
+    ///   Pass GFX_TRANSPARENT (0x00000000) to use the icon's default color.
+    ///   Pass any ARGB8888 value to override (e.g. 0xFF7A1A1A for custom red).
+    ///
+    /// buttonsHidden:
+    ///   true  = hide button row + separator (use dismiss() to close programmatically)
+    ///   false = normal buttons shown (default)
+    ///
+    int quickFireDialog(int screenW, int screenH,
+                        const std::string& title,
+                        const std::string& description,
+                        DialogMode mode             = DialogMode::YesNoCancel,
+                        DialogIcon icon             = DialogIcon::Warning,
+                        uint32_t   titleBarColor    = GFX_TRANSPARENT,  // 0 = use icon default
+                        bool       buttonsHidden    = false,
+                        const std::string& lBtn2    = "",   // Yes/OK label override
+                        const std::string& lBtn1    = "",   // No label override
+                        const std::string& lBtn0    = "")   // Cancel label override
+    {
+        const std::string tmpId = "__qfd_tmp__";
+
+        _dialogs.erase(
+            std::remove_if(_dialogs.begin(), _dialogs.end(),
+                [&](const DlgEntry& e){ return e.id == tmpId; }),
+            _dialogs.end());
+
+        int  result    = DialogResult::Cancel;
+        bool responded = false;
+
+        _dialogs.push_back({ tmpId,
+            DialogWidget(screenW, screenH, title, description, mode, icon,
+                [&](int r){ result = r; responded = true; })
+        });
+        DlgEntry& entry = _dialogs.back();
+
+        // Title bar color: use icon default unless explicitly overridden
+        if (titleBarColor != GFX_TRANSPARENT)
+            entry.widget.setTitleBarColor(titleBarColor);
+
+        if (buttonsHidden)
+            entry.widget.hideButtons();
+
+        if (!lBtn2.empty() || !lBtn1.empty() || !lBtn0.empty())
+            entry.widget.setButtonLabels(lBtn2, lBtn1, lBtn0);
+
+        entry.widget.fire();
+
+        if (_pumpFn) {
+            while (!responded) _pumpFn();
+        } else {
+            fprintf(stderr, "uisys::Manager::quickFireDialog: no pump function set. "
+                            "Call setPumpFn() for proper blocking behavior.\n");
+            while (!responded) { usleep(10000); }
+        }
+
+        _dialogs.erase(
+            std::remove_if(_dialogs.begin(), _dialogs.end(),
+                [&](const DlgEntry& e){ return e.id == tmpId; }),
+            _dialogs.end());
+
+        return result;
+    }
+
+    /// True if any dialog is currently showing (blocks all other input)
+    bool isAnyDialogOpen() const {
+        for (auto& e : _dialogs) if (e.widget.isVisible()) return true;
+        return false;
+    }
+
+    //  Lookup 
+
+    ButtonWidget*   getButton  (const std::string& id);
+    SliderWidget*   getSlider  (const std::string& id);
+    DialWidget*     getDial    (const std::string& id);
+    ComboBoxWidget* getComboBox(const std::string& id);
+    TextEditWidget* getTextEdit(const std::string& id);
+    SpinBoxWidget*  getSpinBox (const std::string& id);
+
+    //  Remove 
+
+    void clear();
+
+    //  Event routing 
+    // Dialogs get first dibs — they block everything when open.
+    // Keyboard gets second dibs — it blocks widgets when visible.
+
+    void handleEvent(const TouchEventData& e);
+
+    //  Draw — templated, must remain in header 
 
     template<typename GFX>
     void draw(GFX& gfx) {
@@ -159,43 +282,27 @@ public:
         for (auto& en : _combos)  en.widget.draw(gfx);
         for (auto& en : _edits)   en.widget.draw(gfx);
         for (auto& en : _spins)   en.widget.draw(gfx);
-        _keyboard.draw(gfx);   // on top of everything
+        _keyboard.draw(gfx);      // on top of widgets
+        for (auto& en : _dialogs) en.widget.draw(gfx);  // on top of everything
     }
 
-    // ── Show / Hide per widget ────────────────────────────────────────────────
+    //  Show / Hide per widget 
 
-    void setVisible(const std::string& id, bool v) {
-        if (auto* e=getButton(id))   { e->setVisible(v); return; }
-        if (auto* e=getSlider(id))   { e->setVisible(v); return; }
-        if (auto* e=getDial(id))     { e->setVisible(v); return; }
-        if (auto* e=getComboBox(id)) { e->setVisible(v); return; }
-        if (auto* e=getTextEdit(id)) { e->setVisible(v); return; }
-        if (auto* e=getSpinBox(id))  { e->setVisible(v); return; }
-    }
+    void setVisible(const std::string& id, bool v);
+    void show(const std::string& id);
+    void hide(const std::string& id);
+    bool isVisible(const std::string& id);
 
-    void show(const std::string& id) { setVisible(id, true);  }
-    void hide(const std::string& id) { setVisible(id, false); }
+    //  Convenience 
 
-    bool isVisible(const std::string& id) {
-        if (auto* e=getButton(id))   return e->isVisible();
-        if (auto* e=getSlider(id))   return e->isVisible();
-        if (auto* e=getDial(id))     return e->isVisible();
-        if (auto* e=getComboBox(id)) return e->isVisible();
-        if (auto* e=getTextEdit(id)) return e->isVisible();
-        if (auto* e=getSpinBox(id))  return e->isVisible();
-        return false;
-    }
-
-    // ── Convenience ──────────────────────────────────────────────────────────
-
-    bool        isToggleOn  (const std::string& id) { auto* b=getButton(id);   return b?b->isToggleOn()      :false; }
-    bool        isHoldActive(const std::string& id) { auto* b=getButton(id);   return b?b->isHoldActive()    :false; }
-    float       sliderValue (const std::string& id) { auto* s=getSlider(id);   return s?s->getValue()        :0.f;   }
-    float       dialValue   (const std::string& id) { auto* d=getDial(id);     return d?d->getValue()        :0.f;   }
-    int         comboIndex  (const std::string& id) { auto* c=getComboBox(id); return c?c->getSelectedIndex():-1;    }
-    std::string editText    (const std::string& id) { auto* e=getTextEdit(id); return e?e->getText()         :"";    }
-    float       spinValue   (const std::string& id) { auto* s=getSpinBox(id);  return s?s->getValue()        :0.f;   }
-    int         spinIntValue(const std::string& id) { auto* s=getSpinBox(id);  return s?s->getIntValue()     :0;     }
+    bool        isToggleOn  (const std::string& id);
+    bool        isHoldActive(const std::string& id);
+    float       sliderValue (const std::string& id);
+    float       dialValue   (const std::string& id);
+    int         comboIndex  (const std::string& id);
+    std::string editText    (const std::string& id);
+    float       spinValue   (const std::string& id);
+    int         spinIntValue(const std::string& id);
 };
 
 } // namespace uisys

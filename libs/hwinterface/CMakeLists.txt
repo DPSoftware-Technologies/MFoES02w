@@ -1,12 +1,17 @@
 cmake_minimum_required(VERSION 3.16)
 project(hwinterface)
 
-# Header-only — all drivers are .h only, no .cpp
-add_library(hwinterface INTERFACE)
+add_library(hwinterface
+    gpio_sysfs.cpp
+    i2c_dev.cpp
+    74hc165.cpp
+    ads1115.cpp
+    usbd_client.cpp
+    gt911.cpp
+)
 
-target_include_directories(hwinterface INTERFACE
+target_include_directories(hwinterface PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
-# pthread required by gt911.h (background poll thread)
-target_link_libraries(hwinterface INTERFACE pthread)
+target_link_libraries(hwinterface PUBLIC pthread)
