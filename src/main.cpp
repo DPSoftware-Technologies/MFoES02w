@@ -13,7 +13,5 @@ int main(int argc, char* argv[]) {
     // destroy
     delete &app;
 
-    system("clear > /dev/tty1"); // clear screen
-
     return code;
 }
