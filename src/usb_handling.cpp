@@ -17,6 +17,7 @@ void App::usbLoop() {
     while (running) {
         if (!usbdc.open(USBD_CHAN_AUTO)) {
             snprintf(statusMsg, sizeof(statusMsg), "USB: waiting... (%ds)", wait_elapsed);
+            RRFSYSMSG = true;
             sleep(1);
             wait_elapsed += 1;
 
@@ -35,6 +36,7 @@ void App::usbLoop() {
             continue;
         }
         snprintf(statusMsg, sizeof(statusMsg), "USB: ch%d connected", usbdc.get_channel());
+        RRFSYSMSG = true;
 
         while (usbdc.is_connected()) {
             int p = usbdc.poll(100);
@@ -45,7 +47,6 @@ void App::usbLoop() {
 
             // Update general data
             if (buf[0] == MSG_UPDATE_VALUE) {
-                RRFSYSMSG = true;
                 snprintf(statusMsg, sizeof(statusMsg), "CV: Updating...");
                 if (r >= sizeof(CValue)) {
                     memcpy(&cvdata, buf, sizeof(CValue));
@@ -53,6 +54,7 @@ void App::usbLoop() {
                 } else {
                     snprintf(statusMsg, sizeof(statusMsg), "CV: Update Error");
                 }
+                RRFSYSMSG = true;
             }
 
             // update TILE
@@ -81,8 +83,8 @@ void App::usbLoop() {
                 }
                 frameReady = true;
                 pthread_mutex_unlock(&frameMutex);
-                RRFSYSMSG = true;
                 snprintf(statusMsg, sizeof(statusMsg), "DTS streaming - tile (%d, %d) updated", tx, ty);
+                RRFSYSMSG = true;
             }
         }
 
@@ -93,6 +95,7 @@ void App::usbLoop() {
         pthread_mutex_unlock(&frameMutex);
 
         snprintf(statusMsg, sizeof(statusMsg), "USB: disconnected, retrying...");
+        RRFSYSMSG = true;
         usbdc.close();
         sleep(1);
     }

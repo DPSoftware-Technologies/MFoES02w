@@ -2,7 +2,7 @@
 
 void App::render(bool forceRender) {
     // designed for saving energy
-    
+
     bool needRender = false;
 
     if (forceRender || RRFDTS || ui.needsRedraw() || show_data_in || show_about || RRFSYSMSG) {
@@ -33,7 +33,7 @@ void App::render(bool forceRender) {
     }
 
     // interactive UI zone
-    if (!hide_ui && (ui.needsRedraw() || forceRender || needRender)) {
+    if (!hide_ui && (ui.needsRedraw() || forceRender || needRender || RRFSYSMSG)) {
         ui.draw(gfx); 
         needRender = true;
     }
@@ -70,6 +70,7 @@ void App::initSysUI() {
                     uisys::DialogIcon::Warning,
                     0, false, "No", "Yes");
                 ui.getButton("quit")->setPressed(false);
+                ui.requestRedraw();
                 if (r == uisys::DialogResult::No) {
                     stop();
                 }
@@ -87,6 +88,7 @@ void App::initSysUI() {
                     uisys::DialogIcon::Warning,
                     0, false, "No", "Yes");
                 ui.getButton("halt")->setPressed(false);
+                ui.requestRedraw();
                 if (r == uisys::DialogResult::No) {
                     auto& dlg = ui.addDialog("__halt__", SCREEN_W, SCREEN_H,
                         "Shutting down...", "The system will power off now.",
@@ -111,6 +113,7 @@ void App::initSysUI() {
                     uisys::DialogIcon::Warning,
                     0, false, "No", "Yes");
                 ui.getButton("hideui")->setPressed(false);
+                ui.requestRedraw();
                 if (r == uisys::DialogResult::No) {
                     show_about = false;
                     hide_ui = true;
@@ -129,6 +132,7 @@ void App::initSysUI() {
                     uisys::DialogIcon::Warning,
                     0, false, "No", "Yes");
                 ui.getButton("restart")->setPressed(false);
+                ui.requestRedraw();
                 if (r == uisys::DialogResult::No) {
                     auto& dlg = ui.addDialog("__rebooting__", SCREEN_W, SCREEN_H,
                         "Restarting...", "The system will restart now now.",
