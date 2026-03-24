@@ -1198,3 +1198,450 @@ uint32_t LinuxGFX::fromRGB565(uint16_t c) {
     uint8_t b = ( c        & 0x1F) << 3;   // 5-bit → 8-bit
     return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
 }
+// =============================================================================
+//  GFXcanvas implementation
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+//  LinuxGFX no-device constructor (used only by GFXcanvas).
+//  Initialises all common members to safe defaults without opening any fd.
+// ---------------------------------------------------------------------------
+LinuxGFX::LinuxGFX(CanvasTag) noexcept
+    :
+#ifdef GFX_USE_DRM_DUMB
+      m_drmFd(-1),
+      m_connId(0), m_crtcId(0), m_modeIdx(0),
+      m_drawIdx(1), m_dispIdx(0),
+      m_flipPending(false),
+#else
+      m_fbFd(-1),
+      m_pFbMem(nullptr),
+      m_fbMemSize(0),
+      m_pitch(0),
+      m_depth(32),
+      m_bufferCount(0),
+      m_drawBufferIndex(0),
+      m_displayBufferIndex(0),
+      m_multiBufferEnabled(false),
+#endif
+      m_pBuffer(nullptr),
+      m_width(0), m_height(0),
+      m_cursorX(0), m_cursorY(0),
+      m_textColor(GFX_WHITE), m_textBgColor(GFX_TRANSPARENT),
+      m_textSizeX(1), m_textSizeY(1),
+      m_textWrap(true), m_rotation(0),
+      m_inverted(false), m_inTransaction(false),
+      m_pFont(nullptr), m_fontSizeMultiplied(true)
+{
+#ifdef GFX_USE_DRM_DUMB
+    for (int i = 0; i < kNumDrmBufs; i++)
+        m_drm[i] = { 0, 0, 0, 0, nullptr };
+    memset(&m_selectedMode, 0, sizeof(m_selectedMode));
+#else
+    for (int i = 0; i < 3; i++) {
+        m_buffers[i].pData  = nullptr;
+        m_buffers[i].bOwned = false;
+        m_buffers[i].bReady = false;
+    }
+#endif
+}
+
+// ----------------------------------------------------------------------------
+//  Internal helper: override LinuxGFX's device pixel paths so that every
+//  inherited draw primitive writes to the canvas heap buffer instead.
+//  We intercept via the virtual-like protected hooks used throughout LinuxGFX.
+// ----------------------------------------------------------------------------
+
+// ---- Colour conversion helpers ---------------------------------------------
+
+uint32_t GFXcanvas::argbFromGray8(uint8_t g) {
+    return 0xFF000000u | ((uint32_t)g << 16) | ((uint32_t)g << 8) | g;
+}
+
+uint32_t GFXcanvas::argbFromRGB565(uint16_t c) {
+    uint8_t r = ((c >> 11) & 0x1F); r = (r << 3) | (r >> 2);
+    uint8_t g = ((c >>  5) & 0x3F); g = (g << 2) | (g >> 4);
+    uint8_t b = ( c        & 0x1F); b = (b << 3) | (b >> 2);
+    return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+}
+
+uint32_t GFXcanvas::argbFromRGB888(uint8_t r, uint8_t g, uint8_t b) {
+    return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+}
+
+uint8_t GFXcanvas::gray8FromARGB(uint32_t argb) {
+    uint8_t r = (argb >> 16) & 0xFF;
+    uint8_t g = (argb >>  8) & 0xFF;
+    uint8_t b =  argb        & 0xFF;
+    // BT.601 luma
+    return (uint8_t)((77u * r + 150u * g + 29u * b) >> 8);
+}
+
+uint16_t GFXcanvas::rgb565FromARGB(uint32_t argb) {
+    uint8_t r = (argb >> 16) & 0xFF;
+    uint8_t g = (argb >>  8) & 0xFF;
+    uint8_t b =  argb        & 0xFF;
+    return (uint16_t)(((uint16_t)(r & 0xF8) << 8) |
+                      ((uint16_t)(g & 0xFC) << 3) |
+                      ((uint16_t)(b         >> 3)));
+}
+
+void GFXcanvas::rgb888FromARGB(uint32_t argb, uint8_t &r, uint8_t &g, uint8_t &b) {
+    r = (argb >> 16) & 0xFF;
+    g = (argb >>  8) & 0xFF;
+    b =  argb        & 0xFF;
+}
+
+// ---- Constructor / destructor ----------------------------------------------
+
+GFXcanvas::GFXcanvas(uint16_t w, uint16_t h, Format fmt, bool allocate_buffer)
+    : LinuxGFX(CanvasTag{}),
+      m_format(fmt),
+      m_canvasBuffer(nullptr),
+      m_bufferBytes(0),
+      m_bufferOwned(false)
+{
+    m_width  = (int16_t)w;
+    m_height = (int16_t)h;
+
+    // Compute buffer size
+    size_t pixels = (size_t)w * (size_t)h;
+    switch (fmt) {
+        case Format::BW:       m_bufferBytes = (pixels + 7) / 8; break;
+        case Format::GRAY8:    m_bufferBytes = pixels;            break;
+        case Format::RGB565:   m_bufferBytes = pixels * 2;        break;
+        case Format::RGB888:   m_bufferBytes = pixels * 3;        break;
+        case Format::ARGB8888: m_bufferBytes = pixels * 4;        break;
+    }
+
+    if (allocate_buffer && m_bufferBytes > 0) {
+        m_canvasBuffer = (uint8_t*)calloc(1, m_bufferBytes);
+        m_bufferOwned  = (m_canvasBuffer != nullptr);
+    }
+
+    // Keep m_pBuffer pointing at the canvas buffer so any inherited path that
+    // writes through m_pBuffer directly (e.g. fast-H/V line DRM path) is safe.
+    // It will only be valid for ARGB8888 format; other formats must always go
+    // through setPixelRaw.
+    if (fmt == Format::ARGB8888)
+        m_pBuffer = (uint32_t*)m_canvasBuffer;
+}
+
+GFXcanvas::~GFXcanvas() {
+    if (m_bufferOwned && m_canvasBuffer) {
+        free(m_canvasBuffer);
+        m_canvasBuffer = nullptr;
+    }
+}
+
+// ---- Buffer management -----------------------------------------------------
+
+bool GFXcanvas::attachBuffer(uint8_t *buf) {
+    if (!buf) return false;
+    if (m_bufferOwned && m_canvasBuffer) {
+        free(m_canvasBuffer);
+    }
+    m_canvasBuffer = buf;
+    m_bufferOwned  = false;
+    if (m_format == Format::ARGB8888)
+        m_pBuffer = (uint32_t*)m_canvasBuffer;
+    return true;
+}
+
+void GFXcanvas::detachBuffer() {
+    if (m_bufferOwned && m_canvasBuffer) {
+        free(m_canvasBuffer);
+    }
+    m_canvasBuffer = nullptr;
+    m_bufferOwned  = false;
+    m_pBuffer      = nullptr;
+}
+
+uint16_t *GFXcanvas::getBufferRGB565() const {
+    if (m_format != Format::RGB565) return nullptr;
+    return (uint16_t*)m_canvasBuffer;
+}
+
+uint32_t *GFXcanvas::getBufferARGB8888() const {
+    if (m_format != Format::ARGB8888) return nullptr;
+    return (uint32_t*)m_canvasBuffer;
+}
+
+bool GFXcanvas::copyToARGB8888(uint32_t *dst) const {
+    if (!m_canvasBuffer || !dst) return false;
+    size_t pixels = (size_t)m_width * (size_t)m_height;
+    for (size_t i = 0; i < pixels; i++) {
+        switch (m_format) {
+            case Format::BW: {
+                uint8_t bit = (m_canvasBuffer[i / 8] >> (7 - (i & 7))) & 1;
+                dst[i] = bit ? GFX_WHITE : GFX_BLACK;
+                break;
+            }
+            case Format::GRAY8:
+                dst[i] = argbFromGray8(m_canvasBuffer[i]);
+                break;
+            case Format::RGB565:
+                dst[i] = argbFromRGB565(((uint16_t*)m_canvasBuffer)[i]);
+                break;
+            case Format::RGB888: {
+                uint8_t *p = m_canvasBuffer + i * 3;
+                dst[i] = argbFromRGB888(p[0], p[1], p[2]);
+                break;
+            }
+            case Format::ARGB8888:
+                dst[i] = ((uint32_t*)m_canvasBuffer)[i];
+                break;
+        }
+    }
+    return true;
+}
+
+bool GFXcanvas::copyToRGB565(uint16_t *dst) const {
+    if (!m_canvasBuffer || !dst) return false;
+    size_t pixels = (size_t)m_width * (size_t)m_height;
+    for (size_t i = 0; i < pixels; i++) {
+        uint32_t argb = 0;
+        switch (m_format) {
+            case Format::BW: {
+                uint8_t bit = (m_canvasBuffer[i / 8] >> (7 - (i & 7))) & 1;
+                argb = bit ? GFX_WHITE : GFX_BLACK;
+                break;
+            }
+            case Format::GRAY8:
+                argb = argbFromGray8(m_canvasBuffer[i]);
+                break;
+            case Format::RGB565:
+                dst[i] = ((uint16_t*)m_canvasBuffer)[i];
+                continue;
+            case Format::RGB888: {
+                uint8_t *p = m_canvasBuffer + i * 3;
+                argb = argbFromRGB888(p[0], p[1], p[2]);
+                break;
+            }
+            case Format::ARGB8888:
+                argb = ((uint32_t*)m_canvasBuffer)[i];
+                break;
+        }
+        dst[i] = rgb565FromARGB(argb);
+    }
+    return true;
+}
+
+void GFXcanvas::byteSwap() {
+    if (!m_canvasBuffer) return;
+    if (m_format == Format::RGB565) {
+        uint16_t *p   = (uint16_t*)m_canvasBuffer;
+        size_t    n   = (size_t)m_width * (size_t)m_height;
+        for (size_t i = 0; i < n; i++)
+            p[i] = (uint16_t)((p[i] << 8) | (p[i] >> 8));
+    }
+    // For other formats byteSwap is a no-op (not meaningful / endian-neutral)
+}
+
+// ---- Low-level pixel access ------------------------------------------------
+
+void GFXcanvas::setPixelRaw(int16_t x, int16_t y, uint32_t argb) {
+    if (!m_canvasBuffer) return;
+    // Alpha-blend over existing pixel (same logic as LinuxGFX::blendARGB but
+    // the destination is read from the canvas buffer in its native format).
+    uint32_t sa = argb >> 24;
+    if (sa == 0) return;  // GFX_TRANSPARENT — skip
+
+    uint32_t dst_argb = 0;
+    if (sa < 255) dst_argb = getPixelRaw(x, y);
+    uint32_t blended = (sa == 255) ? argb : blendARGB(argb, dst_argb);
+
+    size_t offset = (size_t)y * (size_t)m_width + (size_t)x;
+    switch (m_format) {
+        case Format::BW: {
+            uint8_t luma = gray8FromARGB(blended);
+            uint8_t bit  = 7 - (offset & 7);
+            if (luma >= 128)
+                m_canvasBuffer[offset / 8] |=  (uint8_t)(1u << bit);
+            else
+                m_canvasBuffer[offset / 8] &= ~(uint8_t)(1u << bit);
+            break;
+        }
+        case Format::GRAY8:
+            m_canvasBuffer[offset] = gray8FromARGB(blended);
+            break;
+        case Format::RGB565:
+            ((uint16_t*)m_canvasBuffer)[offset] = rgb565FromARGB(blended);
+            break;
+        case Format::RGB888: {
+            uint8_t *p = m_canvasBuffer + offset * 3;
+            rgb888FromARGB(blended, p[0], p[1], p[2]);
+            break;
+        }
+        case Format::ARGB8888:
+            ((uint32_t*)m_canvasBuffer)[offset] = blended;
+            break;
+    }
+}
+
+uint32_t GFXcanvas::getPixelRaw(int16_t x, int16_t y) const {
+    if (!m_canvasBuffer) return 0;
+    size_t offset = (size_t)y * (size_t)m_width + (size_t)x;
+    switch (m_format) {
+        case Format::BW: {
+            uint8_t bit = 7 - (offset & 7);
+            return ((m_canvasBuffer[offset / 8] >> bit) & 1) ? GFX_WHITE : GFX_BLACK;
+        }
+        case Format::GRAY8:
+            return argbFromGray8(m_canvasBuffer[offset]);
+        case Format::RGB565:
+            return argbFromRGB565(((uint16_t*)m_canvasBuffer)[offset]);
+        case Format::RGB888: {
+            const uint8_t *p = m_canvasBuffer + offset * 3;
+            return argbFromRGB888(p[0], p[1], p[2]);
+        }
+        case Format::ARGB8888:
+            return ((uint32_t*)m_canvasBuffer)[offset];
+    }
+    return 0;
+}
+
+// ---- Public pixel API (override LinuxGFX) ----------------------------------
+
+void GFXcanvas::drawPixel(int16_t x, int16_t y, uint32_t color) {
+    if (x < 0 || x >= m_width || y < 0 || y >= m_height) return;
+    // Handle rotation the same way LinuxGFX does for consistency
+    int16_t t;
+    switch (m_rotation) {
+        case 1: t = x; x = m_width - 1 - y; y = t;            break;
+        case 2: x = m_width - 1 - x; y = m_height - 1 - y;    break;
+        case 3: t = x; x = y; y = m_height - 1 - t;           break;
+        default: break;
+    }
+    setPixelRaw(x, y, color);
+}
+
+uint32_t GFXcanvas::getPixel(int16_t x, int16_t y) const {
+    if (x < 0 || x >= m_width || y < 0 || y >= m_height) return 0;
+    int16_t t;
+    switch (m_rotation) {
+        case 1: t = x; x = m_width - 1 - y; y = t;            break;
+        case 2: x = m_width - 1 - x; y = m_height - 1 - y;    break;
+        case 3: t = x; x = y; y = m_height - 1 - t;           break;
+        default: break;
+    }
+    return getPixelRaw(x, y);
+}
+
+void GFXcanvas::fillScreen(uint32_t color) {
+    if (!m_canvasBuffer) return;
+    uint32_t sa = color >> 24;
+    if (sa == 0) return;
+
+    size_t pixels = (size_t)m_width * (size_t)m_height;
+    switch (m_format) {
+        case Format::BW:
+            memset(m_canvasBuffer, (gray8FromARGB(color) >= 128) ? 0xFF : 0x00,
+                   m_bufferBytes);
+            break;
+        case Format::GRAY8:
+            memset(m_canvasBuffer, gray8FromARGB(color), m_bufferBytes);
+            break;
+        case Format::RGB565: {
+            uint16_t c16 = rgb565FromARGB(color);
+            uint16_t *p  = (uint16_t*)m_canvasBuffer;
+            for (size_t i = 0; i < pixels; i++) p[i] = c16;
+            break;
+        }
+        case Format::RGB888: {
+            uint8_t r, g, b;
+            rgb888FromARGB(color, r, g, b);
+            uint8_t *p = m_canvasBuffer;
+            for (size_t i = 0; i < pixels; i++) { *p++ = r; *p++ = g; *p++ = b; }
+            break;
+        }
+        case Format::ARGB8888: {
+            uint32_t *p = (uint32_t*)m_canvasBuffer;
+            for (size_t i = 0; i < pixels; i++) p[i] = color;
+            break;
+        }
+    }
+}
+
+// Fast horizontal line — bypasses rotation/clip overhead for inner loops
+void GFXcanvas::drawFastHLine(int16_t x, int16_t y, int16_t w, uint32_t color) {
+    if (!m_canvasBuffer || w <= 0) return;
+    // Clip
+    if (x < 0) { w += x; x = 0; }
+    if (x + w > m_width) w = m_width - x;
+    if (y < 0 || y >= m_height || w <= 0) return;
+
+    size_t  row    = (size_t)y * (size_t)m_width;
+    uint32_t sa    = color >> 24;
+    if (sa == 0) return;
+
+    switch (m_format) {
+        case Format::BW:
+            for (int16_t i = x; i < x + w; i++) {
+                uint8_t luma = gray8FromARGB(color);
+                uint8_t bit  = 7 - (((row + i)) & 7);
+                size_t  byte = (row + i) / 8;
+                if (luma >= 128)
+                    m_canvasBuffer[byte] |=  (uint8_t)(1u << bit);
+                else
+                    m_canvasBuffer[byte] &= ~(uint8_t)(1u << bit);
+            }
+            break;
+        case Format::GRAY8: {
+            uint8_t g = gray8FromARGB(color);
+            memset(m_canvasBuffer + row + x, g, (size_t)w);
+            break;
+        }
+        case Format::RGB565: {
+            uint16_t c16 = rgb565FromARGB(color);
+            uint16_t *p  = (uint16_t*)m_canvasBuffer + row + x;
+            for (int16_t i = 0; i < w; i++) p[i] = c16;
+            break;
+        }
+        case Format::RGB888: {
+            uint8_t r, g, b;
+            rgb888FromARGB(color, r, g, b);
+            uint8_t *p = m_canvasBuffer + (row + x) * 3;
+            for (int16_t i = 0; i < w; i++) { *p++ = r; *p++ = g; *p++ = b; }
+            break;
+        }
+        case Format::ARGB8888: {
+            uint32_t *p = (uint32_t*)m_canvasBuffer + row + x;
+            for (int16_t i = 0; i < w; i++) p[i] = color;
+            break;
+        }
+    }
+}
+
+// Fast vertical line
+void GFXcanvas::drawFastVLine(int16_t x, int16_t y, int16_t h, uint32_t color) {
+    if (!m_canvasBuffer || h <= 0) return;
+    if (y < 0) { h += y; y = 0; }
+    if (y + h > m_height) h = m_height - y;
+    if (x < 0 || x >= m_width || h <= 0) return;
+
+    uint32_t sa = color >> 24;
+    if (sa == 0) return;
+
+    for (int16_t row = y; row < y + h; row++)
+        setPixelRaw(x, row, color);
+}
+
+// Override the internal fast-line hooks so circle / round-rect helpers work
+void GFXcanvas::drawFastVLineInternal(int16_t x, int16_t y, int16_t h, uint32_t c) {
+    drawFastVLine(x, y, h, c);
+}
+void GFXcanvas::drawFastHLineInternal(int16_t x, int16_t y, int16_t w, uint32_t c) {
+    drawFastHLine(x, y, w, c);
+}
+
+// GFXcanvas::setPixel — override the LinuxGFX protected hook so
+// writePixel() and all inherited primitives that call setPixel directly
+// will write into the canvas buffer instead of the hardware buffer.
+// getPixel() is handled by the public override which also applies rotation.
+
+void GFXcanvas::setPixel(int16_t x, int16_t y, uint32_t color) {
+    // Bounds already checked by caller (writePixel), but guard anyway.
+    if (x < 0 || x >= m_width || y < 0 || y >= m_height) return;
+    setPixelRaw(x, y, color);
+}

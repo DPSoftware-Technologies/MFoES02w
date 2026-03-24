@@ -46,6 +46,8 @@ private:
 
     PumpFn _pumpFn;   ///< optional render+event pump for quickFireDialog
 
+    bool _needsRedraw = true;  ///< set by any widget that changes visible state
+
     // Per-type finders — defined in manager.cpp
     BtnEntry*   findIn(std::vector<BtnEntry>&   v, const std::string& id);
     SldrEntry*  findIn(std::vector<SldrEntry>&  v, const std::string& id);
@@ -54,7 +56,6 @@ private:
     EditEntry*  findIn(std::deque<EditEntry>&   v, const std::string& id);
     SpinEntry*  findIn(std::deque<SpinEntry>&   v, const std::string& id);
     DlgEntry*   findIn(std::deque<DlgEntry>&    v, const std::string& id);
-
 public:
     // kb_x, kb_y, kb_w, kb_h — position/size of the shared keyboard
     Manager(int kb_x = 0, int kb_y = 400, int kb_w = 1280, int kb_h = 320,
@@ -82,6 +83,33 @@ public:
     // busy-wait (dialog draws but no touch events — less ideal).
     //
     void setPumpFn(PumpFn fn) { _pumpFn = fn; }
+
+    // ===== Dirty-flag / redraw request =======================================
+    //
+    // Any widget that changes state calls requestRedraw() internally via
+    // handleEvent().  The main loop polls needsRedraw() and calls clearRedraw()
+    // after it has finished rendering a frame.
+    //
+    // Typical main-loop usage:
+    //
+    //   while (running) {
+    //       TouchEventData e;
+    //       while (touch.poll(e)) ui.handleEvent(e);
+    //
+    //       if (ui.needsRedraw()) {
+    //           gfx.fillScreen(GFX_BLACK);
+    //           ui.draw(gfx);
+    //           gfx.swapBuffers();
+    //           ui.clearRedraw();
+    //       }
+    //   }
+    //
+    // You can also force a redraw from application code:
+    //   ui.requestRedraw();
+    //
+    void requestRedraw()       { _needsRedraw = true; }
+    bool needsRedraw()   const { return _needsRedraw; }
+    void clearRedraw()         { _needsRedraw = false; }
 
     //  Add 
 
@@ -176,7 +204,7 @@ public:
 
     /// Fire a dialog by id — shows it and dims the background
     void fireDialog(const std::string& id) {
-        auto* d = getDialog(id); if (d) d->fire();
+        auto* d = getDialog(id); if (d) { d->fire(); _needsRedraw = true; }
     }
 
     /// quickFireDialog — create, show, block until user responds, then clean up.
@@ -232,7 +260,7 @@ public:
         entry.widget.fire();
 
         if (_pumpFn) {
-            while (!responded) _pumpFn();
+            while (!responded) { _needsRedraw = true; _pumpFn(); }
         } else {
             fprintf(stderr, "uisys::Manager::quickFireDialog: no pump function set. "
                             "Call setPumpFn() for proper blocking behavior.\n");
@@ -276,6 +304,7 @@ public:
 
     template<typename GFX>
     void draw(GFX& gfx) {
+        _needsRedraw = false;   // frame is being rendered right now
         for (auto& en : _buttons) en.widget.draw(gfx);
         for (auto& en : _sliders) en.widget.draw(gfx);
         for (auto& en : _dials)   en.widget.draw(gfx);
@@ -303,6 +332,7 @@ public:
     std::string editText    (const std::string& id);
     float       spinValue   (const std::string& id);
     int         spinIntValue(const std::string& id);
+
 };
 
 } // namespace uisys

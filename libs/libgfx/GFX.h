@@ -138,7 +138,7 @@ public:
 
     // ===== CORE DRAW API =====================================================
 
-    void drawPixel      (int16_t x, int16_t y, uint32_t color);
+    virtual void drawPixel      (int16_t x, int16_t y, uint32_t color);
     void startWrite     (void);
     void endWrite       (void);
     void writePixel     (int16_t x, int16_t y, uint32_t color);
@@ -149,12 +149,12 @@ public:
 
     // ===== BASIC DRAW API ====================================================
 
-    void drawFastVLine  (int16_t x, int16_t y, int16_t h, uint32_t color);
-    void drawFastHLine  (int16_t x, int16_t y, int16_t w, uint32_t color);
+    virtual void drawFastVLine  (int16_t x, int16_t y, int16_t h, uint32_t color);
+    virtual void drawFastHLine  (int16_t x, int16_t y, int16_t w, uint32_t color);
     void drawLine       (int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint32_t color);
     void drawRect       (int16_t x, int16_t y, int16_t w, int16_t h, uint32_t color);
     void fillRect       (int16_t x, int16_t y, int16_t w, int16_t h, uint32_t color);
-    void fillScreen     (uint32_t color);
+    virtual void fillScreen     (uint32_t color);
 
     void drawCircle     (int16_t x0, int16_t y0, int16_t r, uint32_t color);
     void fillCircle     (int16_t x0, int16_t y0, int16_t r, uint32_t color);
@@ -287,9 +287,13 @@ public:
 #endif
 
 protected:
+    /// Protected tag-based constructor used by GFXcanvas to initialise the
+    /// common LinuxGFX state WITHOUT opening any hardware device.
+    struct CanvasTag {};
+    explicit LinuxGFX(CanvasTag) noexcept;
 
-    void     setPixel (int16_t x, int16_t y, uint32_t color);
-    uint32_t getPixel (int16_t x, int16_t y) const;
+    virtual void     setPixel (int16_t x, int16_t y, uint32_t color);
+    virtual uint32_t getPixel (int16_t x, int16_t y) const;
 
     /// Alpha-blend src over dst.  Both ARGB8888.  Returns blended ARGB8888.
     static inline uint32_t blendARGB(uint32_t src, uint32_t dst) {
@@ -307,8 +311,8 @@ protected:
                                uint8_t cornername, uint32_t color);
     void fillCircleHelper     (int16_t x0, int16_t y0, int16_t r,
                                uint8_t cornername, int16_t delta, uint32_t color);
-    void drawFastVLineInternal(int16_t x, int16_t y, int16_t h, uint32_t color);
-    void drawFastHLineInternal(int16_t x, int16_t y, int16_t w, uint32_t color);
+    virtual void drawFastVLineInternal(int16_t x, int16_t y, int16_t h, uint32_t color);
+    virtual void drawFastHLineInternal(int16_t x, int16_t y, int16_t w, uint32_t color);
 
     // ===== Back-end specific members =========================================
 #ifdef GFX_USE_DRM_DUMB
@@ -382,5 +386,167 @@ protected:
 
 // Backwards-compat alias
 typedef LinuxGFX CircleGFX;
+
+// =============================================================================
+// GFXcanvas — Virtual off-screen framebuffer
+// =============================================================================
+//
+// GFXcanvas provides an off-screen rendering surface that supports every draw
+// primitive from LinuxGFX.  It inherits all drawing methods via the same shared
+// implementation: setPixel / getPixel are overridden to target the heap buffer
+// instead of a DRM/fb device.
+//
+// Five pixel formats are supported:
+//
+//   GFXcanvas::Format::BW        1-bit monochrome  — 1 byte per 8 pixels (MSB first)
+//   GFXcanvas::Format::GRAY8     8-bit grayscale   — 1 byte per pixel
+//   GFXcanvas::Format::RGB565    16-bit RGB565     — 2 bytes per pixel, little-endian
+//   GFXcanvas::Format::RGB888    24-bit RGB         — 3 bytes per pixel, R,G,B order
+//   GFXcanvas::Format::ARGB8888  32-bit ARGB        — 4 bytes per pixel (native format)
+//
+// All draw calls accept the same ARGB8888 uint32_t color values as LinuxGFX.
+// Colors are converted to/from the canvas format transparently.
+//
+// Usage:
+//   GFXcanvas canvas(320, 240, GFXcanvas::Format::RGB565);
+//   canvas.fillScreen(GFX_BLACK);
+//   canvas.drawRect(10, 10, 100, 50, GFX_WHITE);
+//   // ... blit to LinuxGFX display:
+//   gfx.drawRGBBitmap(0, 0, canvas.getBufferARGB8888(), canvas.width(), canvas.height());
+//   // or for RGB565 canvas directly:
+//   gfx.drawRGB565Bitmap(0, 0, canvas.getBufferRGB565(), canvas.width(), canvas.height());
+//
+
+class GFXcanvas : public LinuxGFX {
+public:
+    /// Pixel format of the backing buffer.
+    enum class Format : uint8_t {
+        BW       = 0,  ///< 1-bit monochrome (MSB-first, 1 byte per 8 pixels)
+        GRAY8    = 1,  ///< 8-bit grayscale
+        RGB565   = 2,  ///< 16-bit packed RGB (5R-6G-5B)
+        RGB888   = 3,  ///< 24-bit RGB (3 bytes per pixel, R,G,B order)
+        ARGB8888 = 4,  ///< 32-bit ARGB — native LinuxGFX format (default)
+    };
+
+    // -------------------------------------------------------------------------
+    // Construction / destruction
+    // -------------------------------------------------------------------------
+
+    /**
+     * @param w       Canvas width in pixels.
+     * @param h       Canvas height in pixels.
+     * @param fmt     Pixel format of the backing buffer (default: ARGB8888).
+     * @param allocate_buffer  If false the buffer is not allocated; useful when
+     *                         you want to attach an external buffer later via
+     *                         attachBuffer().
+     */
+    GFXcanvas(uint16_t w, uint16_t h,
+              Format   fmt              = Format::ARGB8888,
+              bool     allocate_buffer  = true);
+
+    ~GFXcanvas();
+
+    // -------------------------------------------------------------------------
+    // Core pixel operations  (override LinuxGFX hardware paths)
+    // -------------------------------------------------------------------------
+
+    void     drawPixel     (int16_t x, int16_t y, uint32_t color) override;
+    void     fillScreen    (uint32_t color)                        override;
+    void     drawFastVLine (int16_t x, int16_t y, int16_t h, uint32_t color) override;
+    void     drawFastHLine (int16_t x, int16_t y, int16_t w, uint32_t color) override;
+
+    /** Read a pixel back as ARGB8888 regardless of the canvas format. */
+    uint32_t getPixel      (int16_t x, int16_t y) const override;
+
+    // -------------------------------------------------------------------------
+    // Buffer access
+    // -------------------------------------------------------------------------
+
+    /** Raw buffer pointer — byte layout depends on the canvas Format. */
+    uint8_t *getBuffer()         const { return m_canvasBuffer; }
+
+    /** Convenience: raw pointer typed as uint16_t (only valid for RGB565 format). */
+    uint16_t *getBufferRGB565()  const;
+
+    /** Convenience: raw pointer typed as uint32_t (only valid for ARGB8888 format). */
+    uint32_t *getBufferARGB8888() const;
+
+    /**
+     * Copy the canvas contents into a caller-supplied ARGB8888 buffer.
+     * @param dst   Output buffer; must be at least width()*height()*4 bytes.
+     * @return true on success, false if the canvas has no buffer.
+     */
+    bool copyToARGB8888(uint32_t *dst) const;
+
+    /**
+     * Copy the canvas contents into a caller-supplied RGB565 buffer.
+     * @param dst   Output buffer; must be at least width()*height()*2 bytes.
+     * @return true on success.
+     */
+    bool copyToRGB565(uint16_t *dst) const;
+
+    // -------------------------------------------------------------------------
+    // External buffer attachment
+    // -------------------------------------------------------------------------
+
+    /**
+     * Attach a pre-allocated external buffer.
+     * The canvas does NOT take ownership — the caller must keep it alive.
+     * Any previously owned internal buffer is freed.
+     * @param buf  External buffer of at least bufferSize() bytes.
+     * @return true on success.
+     */
+    bool attachBuffer(uint8_t *buf);
+
+    /** Detach an external buffer and leave the canvas without a buffer. */
+    void detachBuffer();
+
+    // -------------------------------------------------------------------------
+    // Metadata
+    // -------------------------------------------------------------------------
+
+    Format   format()     const { return m_format; }
+    size_t   bufferSize() const { return m_bufferBytes; }
+
+    /** Byte-swap every pixel value in-place (useful for RGB565 endian conversion). */
+    void byteSwap();
+
+protected:
+    // Hooks used by all inherited LinuxGFX draw methods
+    void     setPixelRaw   (int16_t x, int16_t y, uint32_t argb);
+    uint32_t getPixelRaw   (int16_t x, int16_t y) const;
+
+    // Override LinuxGFX protected pixel hooks so writePixel/writeFastHLine etc. work
+    void     setPixel (int16_t x, int16_t y, uint32_t color) override;
+
+    void drawFastVLineInternal(int16_t x, int16_t y, int16_t h, uint32_t color) override;
+    void drawFastHLineInternal(int16_t x, int16_t y, int16_t w, uint32_t color) override;
+
+private:
+    Format   m_format;
+    uint8_t *m_canvasBuffer;   ///< Heap buffer (owned when m_bufferOwned == true)
+    size_t   m_bufferBytes;    ///< Total size in bytes
+    bool     m_bufferOwned;    ///< True when we allocated the buffer ourselves
+
+    // Colour conversion helpers
+    static uint32_t argbFromGray8  (uint8_t  g);
+    static uint32_t argbFromRGB565 (uint16_t c);
+    static uint32_t argbFromRGB888 (uint8_t r, uint8_t g, uint8_t b);
+
+    static uint8_t  gray8FromARGB  (uint32_t argb);
+    static uint16_t rgb565FromARGB (uint32_t argb);
+    static void     rgb888FromARGB (uint32_t argb, uint8_t &r, uint8_t &g, uint8_t &b);
+
+    // Disable copy
+    GFXcanvas(const GFXcanvas&)            = delete;
+    GFXcanvas& operator=(const GFXcanvas&) = delete;
+};
+
+// Convenience type aliases (mirrors Adafruit GFX naming)
+using GFXcanvasBW      = GFXcanvas;   ///< Use with Format::BW
+using GFXcanvasGray    = GFXcanvas;   ///< Use with Format::GRAY8
+using GFXcanvas16      = GFXcanvas;   ///< Use with Format::RGB565
+using GFXcanvas24      = GFXcanvas;   ///< Use with Format::RGB888
+using GFXcanvas32      = GFXcanvas;   ///< Use with Format::ARGB8888
 
 #endif // GFX_H

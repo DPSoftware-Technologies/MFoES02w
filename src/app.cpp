@@ -24,7 +24,7 @@ App::~App() {
 
 void App::init() {
     gfx.enableMultiBuffer(2);
-    gfx.fillScreen(0x0000);
+    gfx.fillScreen(GFX_BLACK);
     gfx.swapBuffers();
 
     // Start USB in background, don't block init
@@ -45,7 +45,6 @@ void App::init() {
         pthread_mutex_lock(&frameMutex);
         snprintf(statusMsg, sizeof(statusMsg), "Touch: press at (%d, %d)", e.point.x, e.point.y);
         pthread_mutex_unlock(&frameMutex);
-
         std::lock_guard<std::mutex> lock(touchQueueMutex);
         touchQueue.push(e);  
     });
@@ -90,38 +89,32 @@ void App::inputHandle() {
         TouchEventData e = touchQueue.front();
         touchQueue.pop();
         switch (e.event) {
-            case TouchEvent::PRESS:
-                gfx.drawCircle(e.point.x, e.point.y, 20, gfx.color565(0xFF,0x00,0x00));
-                break;
-            case TouchEvent::MOVE:
-                gfx.fillCircle(e.point.x, e.point.y, 5, gfx.color565(0x00,0xFF,0x00));
-                break;
-            case TouchEvent::HOLD:
-                gfx.drawCircle(e.point.x, e.point.y, 40, gfx.color565(0xFF,0xFF,0x00));
-                break;
-            case TouchEvent::RELEASE:
-                break;
+            case TouchEvent::PRESS: break;
+            case TouchEvent::MOVE: break;
+            case TouchEvent::HOLD: break;
+            case TouchEvent::RELEASE: break;
         }
-        ui.handleEvent(e);
+        if (!hide_ui) ui.handleEvent(e);
     }
 }
 
 void App::process() {
     pthread_mutex_lock(&frameMutex);
-    if (frameReady) memcpy(frameBufB, frameBufA, FRAME_SIZE);
-    hasFrame = frameReady;
+    if (frameReady) {
+        memcpy(frameBufB, frameBufA, FRAME_SIZE); 
+        hasFrame = frameReady;
+        RRFDTS = true;
+    }
     pthread_mutex_unlock(&frameMutex);
 
     inputHandle();
 
     // Drain actions posted from other threads
-    {
-        std::lock_guard<std::mutex> lock(_actionQueueMutex);
-        while (!_actionQueue.empty()) {
-            auto fn = _actionQueue.front();
-            _actionQueue.pop();
-            fn();   // runs on main thread — safe to call UI/GFX
-        }
+    std::lock_guard<std::mutex> lock(_actionQueueMutex);
+    while (!_actionQueue.empty()) {
+        auto fn = _actionQueue.front();
+        _actionQueue.pop();
+        fn();   // runs on main thread — safe to call UI/GFX
     }
 
     render();

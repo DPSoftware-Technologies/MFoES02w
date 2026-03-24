@@ -39,6 +39,7 @@ void Manager::clear() {
     _edits.clear();
     _spins.clear();
     _dialogs.clear();
+    _needsRedraw = true;
 }
 
 //  Event routing 
@@ -48,29 +49,35 @@ void Manager::handleEvent(const TouchEventData& e) {
     for (auto& en : _dialogs) {
         if (en.widget.isVisible()) {
             en.widget.handleEvent(e);
+            _needsRedraw = true;
             return;  // nothing else sees the event
         }
     }
     // Keyboard gets second priority
-    if (_keyboard.handleEvent(e)) return;
-    // Normal widgets
-    for (auto& en : _buttons) en.widget.handleEvent(e);
-    for (auto& en : _sliders) en.widget.handleEvent(e);
-    for (auto& en : _dials)   en.widget.handleEvent(e);
-    for (auto& en : _combos)  en.widget.handleEvent(e);
-    for (auto& en : _edits)   en.widget.handleEvent(e);
-    for (auto& en : _spins)   en.widget.handleEvent(e);
+    if (_keyboard.handleEvent(e)) {
+        _needsRedraw = true;
+        return;
+    }
+    // Normal widgets — collect whether any of them consumed the event
+    bool consumed = false;
+    for (auto& en : _buttons) { auto pre = en.widget.isPressed(); en.widget.handleEvent(e); if (en.widget.isPressed() != pre || e.event == TouchEvent::RELEASE) consumed = true; }
+    for (auto& en : _sliders) { en.widget.handleEvent(e); consumed = true; }
+    for (auto& en : _dials)   { en.widget.handleEvent(e); consumed = true; }
+    for (auto& en : _combos)  { en.widget.handleEvent(e); consumed = true; }
+    for (auto& en : _edits)   { en.widget.handleEvent(e); consumed = true; }
+    for (auto& en : _spins)   { en.widget.handleEvent(e); consumed = true; }
+    if (consumed) _needsRedraw = true;
 }
 
 //  Show / Hide 
 
 void Manager::setVisible(const std::string& id, bool v) {
-    if (auto* e=getButton(id))   { e->setVisible(v); return; }
-    if (auto* e=getSlider(id))   { e->setVisible(v); return; }
-    if (auto* e=getDial(id))     { e->setVisible(v); return; }
-    if (auto* e=getComboBox(id)) { e->setVisible(v); return; }
-    if (auto* e=getTextEdit(id)) { e->setVisible(v); return; }
-    if (auto* e=getSpinBox(id))  { e->setVisible(v); return; }
+    if (auto* e=getButton(id))   { e->setVisible(v); _needsRedraw = true; return; }
+    if (auto* e=getSlider(id))   { e->setVisible(v); _needsRedraw = true; return; }
+    if (auto* e=getDial(id))     { e->setVisible(v); _needsRedraw = true; return; }
+    if (auto* e=getComboBox(id)) { e->setVisible(v); _needsRedraw = true; return; }
+    if (auto* e=getTextEdit(id)) { e->setVisible(v); _needsRedraw = true; return; }
+    if (auto* e=getSpinBox(id))  { e->setVisible(v); _needsRedraw = true; return; }
 }
 
 void Manager::show(const std::string& id) { setVisible(id, true);  }

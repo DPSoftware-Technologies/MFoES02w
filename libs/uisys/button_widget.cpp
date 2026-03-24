@@ -17,23 +17,27 @@ ButtonTheme ButtonTheme::Danger() {
 
 ButtonTheme ButtonTheme::Military() {
     ButtonTheme t;
-    t.colNormal   = 0xFF1A2E00u;  // dark olive — slightly brighter for visibility
-    t.colPressed  = 0xFF4A8200u;  // mid green
-    t.colToggleOn = 0xFF2E6B00u;  // toggled on — clearly green
-    t.colHolding  = 0xFF636100u;  // olive amber
-    t.colBorder   = 0xFF6B8C6Bu;  // visible olive-grey border
-    t.colText     = 0xFFE0FFE0u;  // light green-tinted white — readable on dark
+    t.colNormal   = 0xFF1A2E00u;
+    t.colPressed  = 0xFF4A8200u;
+    t.colToggleOn = 0xFF2E6B00u;
+    t.colHolding  = 0xFF636100u;
+    t.colBorder   = 0xFF6B8C6Bu;
+    t.colText     = 0xFFE0FFE0u;
+    t.colSwipeFill  = 0xFF4A8200u;  // olive green
+    t.colSwipeTrack = 0xFF0D1600u;  // near-black olive
     return t;
 }
 
 ButtonTheme ButtonTheme::HUD() {
     ButtonTheme t;
-    t.colNormal   = 0xFF002A2Bu;  // dark teal — slightly brighter
-    t.colPressed  = 0xFF00FF00u;  // bright green
-    t.colToggleOn = 0xFF007A00u;  // mid green when on
-    t.colHolding  = 0xFFFFA600u;  // amber
-    t.colBorder   = 0xFF00C800u;  // bright green border — visible
-    t.colText     = 0xFF00FF00u;  // green text
+    t.colNormal   = 0xFF002A2Bu;
+    t.colPressed  = 0xFF00FF00u;
+    t.colToggleOn = 0xFF007A00u;
+    t.colHolding  = 0xFFFFA600u;
+    t.colBorder   = 0xFF00C800u;
+    t.colText     = 0xFF00FF00u;
+    t.colSwipeFill  = 0xFF00FF00u;  // bright green
+    t.colSwipeTrack = 0xFF001400u;  // very dark green
     return t;
 }
 
@@ -87,13 +91,17 @@ void ButtonWidget::handleEvent(const TouchEventData& e) {
                 fire(ButtonState::TRIGGER);
 
             } else if (mode == ButtonMode::TRIGGER_HOLD) {
-                fire(ButtonState::TRIGGER);  // fires immediately on press
+                fire(ButtonState::TRIGGER);
 
             } else if (mode == ButtonMode::TOGGLE) {
                 toggleState = !toggleState;
                 fire(toggleState ? ButtonState::TOGGLE_ON : ButtonState::TOGGLE_OFF);
+
+            } else if (mode == ButtonMode::HOLD_SWIPE) {
+                _swipePressedAt = 0;   // seeded on first update() call
+                _swipeProgress  = 0.f;
+                _swipeFired     = false;
             }
-            // HOLD: nothing fires on press alone
             break;
 
         case TouchEvent::HOLD:
@@ -109,11 +117,14 @@ void ButtonWidget::handleEvent(const TouchEventData& e) {
         case TouchEvent::MOVE:
             if (!pressed) break;
             if (!hitTest(e.point.x, e.point.y)) {
-                // Finger left button area
                 if ((mode == ButtonMode::HOLD || mode == ButtonMode::TRIGGER_HOLD)
                     && holdActive) {
                     holdActive = false;
                     fire(ButtonState::HOLD_CANCEL);
+                }
+                if (mode == ButtonMode::HOLD_SWIPE && !_swipeFired) {
+                    _swipeProgress = 0.f;
+                    fire(ButtonState::SWIPE_CANCEL);
                 }
                 pressed = false;
             }
@@ -128,7 +139,30 @@ void ButtonWidget::handleEvent(const TouchEventData& e) {
                 holdActive = false;
                 fire(ButtonState::HOLD_END);
             }
+            if (mode == ButtonMode::HOLD_SWIPE && !_swipeFired) {
+                _swipeProgress = 0.f;
+                fire(ButtonState::SWIPE_CANCEL);
+            }
             break;
+    }
+}
+
+//  HOLD_SWIPE update — call every frame with millis()
+
+void ButtonWidget::update(uint32_t nowMs) {
+    if (mode != ButtonMode::HOLD_SWIPE) return;
+    if (!pressed || _swipeFired)        return;
+
+    if (_swipePressedAt == 0)
+        _swipePressedAt = nowMs;  // latch on first frame after press
+
+    uint32_t elapsed = nowMs - _swipePressedAt;
+    _swipeProgress = (float)elapsed / (float)_swipeDurationMs;
+    if (_swipeProgress > 1.f) _swipeProgress = 1.f;
+
+    if (_swipeProgress >= 1.f) {
+        _swipeFired = true;
+        fire(ButtonState::SWIPE_DONE);
     }
 }
 

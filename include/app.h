@@ -91,54 +91,72 @@ class App {
             _actionQueue.push(fn);
         }
     private:
+        // Hardware init
         LinuxGFX   gfx;
         I2CBus     i2c;
         UsbdClient usbdc;
         GT911 touch;
         GpioPin buz;
 
-        CValue cvdata;
+        // touch
+        std::queue<TouchEventData> touchQueue;
+        std::mutex touchQueueMutex;
 
-        uisys::Manager ui;
-
-        char      statusMsg[128];
+        // USB
         pthread_t usb_thread;
         static void* usbThreadFunc(void* arg);
-
-        bool hasFrame = false;
-        int sw = gfx.width();
-        int sh = gfx.height();
-        int fps_us = 1000000 / APP_FPS;
-
         void usbLoop();
         void initSysUI();
-        void initDemoUI();
-        void initSidebarBTNs();
-        void renderAbout();
-        void renderDataInInfo();
-        void render();
-        void process();
-        void inputHandle();
 
+        // system msg
+        char statusMsg[128];
+
+        // UI
+        uisys::Manager ui;
+        std::function<void()> _pendingAction; 
+        std::queue<std::function<void()>> _actionQueue;
+        std::mutex _actionQueueMutex;
+
+        // DTS
+        bool hasFrame = false;
         uint16_t frameBufA[FRAME_PIXELS];  // USB thread writes
         uint16_t frameBufB[FRAME_PIXELS];  // render thread reads
         bool frameReady;
         pthread_mutex_t frameMutex;
-        
-        std::queue<TouchEventData> touchQueue;
-        std::mutex touchQueueMutex;
 
+        // app
+        int sw = gfx.width();
+        int sh = gfx.height();
+        int fps_us = 1000000 / APP_FPS;
+        bool running = true;
+        
+        // app init
+        void initDemoUI();
+        void initSidebarBTNs();
+
+        // render
+        void renderAbout();
+        void renderDataInInfo();
+        void render(bool forceRender=false);
+        void process();
+        void inputHandle();
+
+        // Data input handler
+        CValue cvdata;
+
+        // helper function
+        void drawGauge(int x, int y, int r, float value, float minVal, float maxVal);
+        
         bool show_about = false;
         bool hide_ui = false;
         bool show_data_in = false;
 
-        bool running = true;
-
-        std::function<void()> _pendingAction; 
-        std::queue<std::function<void()>> _actionQueue;
-        std::mutex _actionQueueMutex;
+        // Request Render For ...
+        bool RRFDTS = false;
+        bool RRFSYSMSG = false;
 };
 
+// for check Adafruit GFX assets compatible
 static const unsigned char adaf_logo_bmp[] = {
 	0b00000000,0b00000000,0b01100000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,
 	0b00000000,0b00000000,0b11100000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,0b00000000,

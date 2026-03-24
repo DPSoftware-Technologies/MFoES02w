@@ -1,27 +1,62 @@
 #include "app.h"
 
-void App::render() {
-    if (hasFrame) {
-        int ox = (sw - SCREEN_W) / 2;
-        int oy = (sh - SCREEN_H) / 2;
-        gfx.drawRGB565Bitmap(ox, oy, frameBufB, SCREEN_W, SCREEN_H);
-    } else {
-        gfx.fillScreen(GFX_BLACK);
+void App::render(bool forceRender) {
+    // designed for saving energy
+    
+    bool needRender = false;
+
+    if (forceRender || RRFDTS || ui.needsRedraw() || show_data_in || show_about || RRFSYSMSG) {
+        gfx.fillScreen(0x000000);
     }
 
-    gfx.setCursor(10, 10);
-    gfx.setTextColor(0xFFFFFFFF);
-    gfx.setTextSize(1);
-    pthread_mutex_lock(&frameMutex);
-    gfx.writeText(statusMsg);
-    pthread_mutex_unlock(&frameMutex);
+    // application zone
+    if (RRFDTS || forceRender) {
+        if (hasFrame) {
+            int ox = (sw - SCREEN_W) / 2;
+            int oy = (sh - SCREEN_H) / 2;
+            gfx.drawRGB565Bitmap(ox, oy, frameBufB, SCREEN_W, SCREEN_H);
+        }
 
-    if (show_data_in) renderDataInInfo();
-    if (show_about) renderAbout();
+        RRFDTS = false;
+        needRender = true;
+    }
+    
+    // user zone
+    if (show_data_in) {
+        renderDataInInfo();
+        needRender = true;
+    }
 
-    if (!hide_ui) ui.draw(gfx);
+    if (show_about) {
+        renderAbout(); 
+        needRender = true;
+    }
 
-    gfx.swapBuffers();
+    // interactive UI zone
+    if (!hide_ui && (ui.needsRedraw() || forceRender || needRender)) {
+        ui.draw(gfx); 
+        needRender = true;
+    }
+
+    // system 
+    // debug
+    if (RRFSYSMSG || forceRender || needRender) {
+        gfx.setCursor(10, 10);
+        gfx.setTextColor(0xFFFFFFFF);
+        gfx.setTextSize(1);
+        pthread_mutex_lock(&frameMutex);
+        gfx.writeText(statusMsg);
+        pthread_mutex_unlock(&frameMutex);
+
+        RRFSYSMSG = false;
+        needRender = true;
+    }
+
+    // render
+    if (forceRender || needRender) { 
+        gfx.swapBuffers();
+        needRender = false;
+    };
 }
 
 void App::initSysUI() {
@@ -59,7 +94,7 @@ void App::initSysUI() {
                         uisys::DialogIcon::Info);
                     dlg.hideButtons();
                     dlg.fire();
-                    render();
+                    render(true);
                     system("halt");
                 }
             });
@@ -101,7 +136,7 @@ void App::initSysUI() {
                         uisys::DialogIcon::Info);
                     dlg.hideButtons();
                     dlg.fire();
-                    render();
+                    render(true);
                     system("reboot");
                 }
             });
@@ -121,12 +156,16 @@ void App::initDemoUI() {
     ui.addButton("arm",   250, 600, 180, 60, "ARM",   uisys::ButtonMode::TOGGLE,
         [this](int s){  },
         uisys::ButtonTheme::Military());
-
+    
     ui.addButton("boost", 450, 600, 180, 60, "BOOST", uisys::ButtonMode::HOLD,
         [this](int s){
             buz.set((s == 3) ? 1 : 0); 
         },
         uisys::ButtonTheme::HUD());
+
+    ui.addButton("testbtn1", 650, 600, 180, 60, "Test",   uisys::ButtonMode::HOLD_SWIPE,
+        [this](int s){  },
+        uisys::ButtonTheme::Military());
 
     ui.addSlider("vol",  50, 500, 300, 30, uisys::SliderOrientation::HORIZONTAL,
         "Volume", 0.0f, 100.0f,
@@ -174,6 +213,7 @@ void App::initDemoUI() {
     ui.hide("name");
     ui.hide("arm");
     ui.hide("vol");
+    ui.hide("testbtn1");
     ui.getComboBox("mode")->setVisible(false);
     ui.getSpinBox("speed")->setVisible(false);
     ui.getSpinBox("gain2")->setVisible(false);
@@ -218,6 +258,7 @@ void App::initSidebarBTNs() {
                 ui.hide("name");
                 ui.hide("arm");
                 ui.hide("vol");
+                ui.hide("testbtn1");
             } else {
                 ui.show("fire");
                 ui.show("boost");
@@ -228,6 +269,7 @@ void App::initSidebarBTNs() {
                 ui.show("name");
                 ui.show("arm");
                 ui.show("vol");
+                ui.show("testbtn1");
             }
         },
         uisys::ButtonTheme::Military());
@@ -251,6 +293,23 @@ void App::renderAbout() {
     gfx.drawBitmap(795, sh-100, adaf_logo_bmp, 115, 32, 0xFFFFFFFFu);
 }
 
+void App::drawGauge(int x, int y, int r, float value, float minVal, float maxVal) {
+    float angleDegrees = (value - minVal) * (180.0 - 0.0) / (maxVal - minVal);
+    
+    angleDegrees = 180.0 - angleDegrees; 
+
+    float angleRad = angleDegrees * (3.14159265 / 180.0);
+
+    // Use drawCircle instead of the protected drawCircleHelper
+    gfx.drawCircle(x, y, r, GFX_WHITE);
+
+    int xEnd = x + cos(angleRad) * (r - 5);
+    int yEnd = y - sin(angleRad) * (r - 5);
+
+    gfx.drawLine(x, y, xEnd, yEnd, GFX_WHITE);
+}
+
+
 void App::renderDataInInfo() {
     gfx.setTextColor(0xFFFFFFFF);
     gfx.setTextSize(2);
@@ -270,4 +329,6 @@ void App::renderDataInInfo() {
         gfx.setCursor(20, 50 + (i * 15));
         gfx.writeTextF("CV%d: %u", i + 1, values[i]);
     }
+
+    drawGauge(50, 200, 10, cvdata.v1, 0, 100);
 }

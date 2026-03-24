@@ -45,6 +45,7 @@ void App::usbLoop() {
 
             // Update general data
             if (buf[0] == MSG_UPDATE_VALUE) {
+                RRFSYSMSG = true;
                 snprintf(statusMsg, sizeof(statusMsg), "CV: Updating...");
                 if (r >= sizeof(CValue)) {
                     memcpy(&cvdata, buf, sizeof(CValue));
@@ -80,6 +81,7 @@ void App::usbLoop() {
                 }
                 frameReady = true;
                 pthread_mutex_unlock(&frameMutex);
+                RRFSYSMSG = true;
                 snprintf(statusMsg, sizeof(statusMsg), "DTS streaming - tile (%d, %d) updated", tx, ty);
             }
         }
