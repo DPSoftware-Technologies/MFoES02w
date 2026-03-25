@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(uisys)
 
-add_library(uisys STATIC
+add_library(uisys
     ${CMAKE_CURRENT_SOURCE_DIR}/button_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/slider_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dial_widget.cpp

@@ -3,7 +3,7 @@ project(libgfx LANGUAGES CXX)
 
 option(GFX_USE_FB "Use legacy /dev/fb0 framebuffer backend instead of DRM dumb-buffer" OFF)
 
-add_library(libgfx STATIC
+add_library(libgfx
     ${CMAKE_CURRENT_SOURCE_DIR}/GFX.cpp
 )
 

@@ -2,7 +2,10 @@
 
 void App::render(bool forceRender) {
     // designed for saving energy
-
+    
+    forceRender = RRFF;
+    RRFF = false; // reset state
+    
     bool needRender = false;
 
     if (forceRender || RRFDTS || ui.needsRedraw() || show_data_in || show_about || RRFSYSMSG) {

@@ -32,6 +32,7 @@ void App::usbLoop() {
                             uisys::DialogIcon::Error);
                     });
                 });
+                RRFF = true;
             }
             continue;
         }

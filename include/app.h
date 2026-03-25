@@ -154,6 +154,7 @@ class App {
         // Request Render For ...
         bool RRFDTS = false;
         bool RRFSYSMSG = false;
+        bool RRFF = false; // Force render
 };
 
 // for check Adafruit GFX assets compatible
