@@ -5,6 +5,7 @@
 #include "hwinterface/i2c_dev.h"
 #include "hwinterface/usbd_client.h"
 #include "hwinterface/gt911.h"
+#include "hwinterface/pwm.h"
 #include <pthread.h>
 #include <stdint.h>
 #include <string.h>
@@ -84,6 +85,7 @@ class App {
         void init();
         int  run();
         void stop();
+        void ostop(bool restart=false);
 
         void defer(std::function<void()> fn) { _pendingAction = fn; }
         void postAction(std::function<void()> fn) {
@@ -96,7 +98,7 @@ class App {
         I2CBus     i2c;
         UsbdClient usbdc;
         GT911 touch;
-        GpioPin buz;
+        PWM buz;
 
         // touch
         std::queue<TouchEventData> touchQueue;

@@ -35,10 +35,10 @@
 // All color values are 32-bit ARGB8888:
 //
 //   0xAARRGGBB
-//     ││││││└─ Blue  0–255
-//     ││││└─── Green 0–255
-//     ││└───── Red   0–255
-//     └─────── Alpha 0=fully transparent … 255=fully opaque
+//     ││││││└ Blue  0–255
+//     ││││└ Green 0–255
+//     ││└ Red   0–255
+//     └ Alpha 0=fully transparent … 255=fully opaque
 //
 // Alpha behaviour:
 //   Alpha=255 (0xFF______) — fully opaque fast path, no readback needed.

@@ -31,15 +31,29 @@ void App::usbLoop() {
                             uisys::DialogMode::Notice,
                             uisys::DialogIcon::Error);
                     });
+                    RRFF = true;
+                    buz.setFrequencyHz(300.0f, 50.0f);
+                    for (int i = 0; i < 3; i++) {
+                        buz.enable();
+                        usleep(100000); 
+                        buz.disable();
+                        usleep(50000); 
+                    }
                 });
-                RRFF = true;
+                break;
             }
             continue;
         }
+        if (timeoutShown) {
+            timeoutShown = false;
+            wait_elapsed = 0;
+            break;
+        }
+
         snprintf(statusMsg, sizeof(statusMsg), "USB: ch%d connected", usbdc.get_channel());
         RRFSYSMSG = true;
 
-        while (usbdc.is_connected()) {
+        while (usbdc.is_connected() || running) {
             int p = usbdc.poll(100);
             if (p <= 0) continue;
 

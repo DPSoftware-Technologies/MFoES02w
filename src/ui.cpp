@@ -100,7 +100,7 @@ void App::initSysUI() {
                     dlg.hideButtons();
                     dlg.fire();
                     render(true);
-                    system("halt");
+                    ostop(false);
                 }
             });
         },
@@ -144,7 +144,7 @@ void App::initSysUI() {
                     dlg.hideButtons();
                     dlg.fire();
                     render(true);
-                    system("reboot");
+                    ostop(true);
                 }
             });
         },

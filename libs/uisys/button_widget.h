@@ -152,7 +152,7 @@ public:
     void draw(GFX& gfx) const {
         if (!visible_widget) return;
 
-        // ── HOLD_SWIPE ──────────────────────────────────────────────────────
+        //  HOLD_SWIPE 
         if (mode == ButtonMode::HOLD_SWIPE) {
             // Track
             gfx.fillRect(x, y, w, h, theme.colSwipeTrack);
@@ -188,7 +188,7 @@ public:
             return;
         }
 
-        // ── All other modes ─────────────────────────────────────────────────
+        //  All other modes 
         uint32_t bg;
         if (mode == ButtonMode::TOGGLE) {
             bg = toggleState ? theme.colToggleOn : theme.colNormal;

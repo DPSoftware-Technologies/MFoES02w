@@ -10,7 +10,7 @@ App::App()
         i2c("/dev/i2c-1"),
         frameReady(false),
         touch(i2c, 17, 27),  // int_pin=17, rst_pin=27
-        buz(4, true),
+        buz(0, 0),
         ui(0, 400, 1280, 320, uisys::Font::Medium())
 {
     pthread_mutex_init(&frameMutex, nullptr);
@@ -81,6 +81,18 @@ void App::init() {
     ui.setPumpFn([this]() {
         process();
     });
+
+    // buzzer test
+    buz.enable();
+    for (float n : {750.0f, 1000.0f}) {
+        buz.disable();
+        buz.setFrequencyHz(n, 50.0f);
+        buz.enable();
+        usleep(100000);
+    }
+    buz.disable();
+
+    buz.setFrequencyHz(1000.0f, 50.0f); 
 }
 
 void App::inputHandle() {
@@ -131,12 +143,50 @@ int App::run() {
             action();   // quickFireDialog spins process() via setPumpFn
         }
     }
-
     printf("Exiting...");
+    
     return 0;
 }
 
+void App::ostop(bool restart) {
+    stop();
+    
+    buz.setFrequencyHz(450.0f, 50.0f);
+
+    if (restart) {
+        buz.enable();
+        usleep(200000); 
+        buz.disable();
+
+        system("reboot");
+    } else {
+        for (int i = 0; i < 2; i++) {
+            buz.enable();
+            usleep(100000); 
+            buz.disable();
+            usleep(25000); 
+        }
+
+        system("halt");
+    }
+}
+
 void App::stop() {
-    pthread_join(usb_thread, nullptr);
-    running = false;
+    running = false; 
+
+    buz.setFrequencyHz(500.0f, 50.0f);
+    buz.enable();
+    usleep(50000); 
+    buz.disable();
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 2; // Set a 2-second timeout
+
+    int s = pthread_timedjoin_np(usb_thread, nullptr, &ts);
+    if (s == ETIMEDOUT) {
+        // Thread didn't stop in time, move on anyway
+    }
+    
+    usleep(100000); 
 }
