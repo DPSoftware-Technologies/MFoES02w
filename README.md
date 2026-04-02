@@ -4,7 +4,10 @@ MFoES02w (Mounted Family of Embedded Systems) is an open-source, modular embedde
 
 Originally inspired by real-world military MFD (Multi-Function Display) concepts, MFoES02w is designed to run on Raspberry Pi Zero 2w, prioritizing reliability, clarity, and physical interaction over raw compute power.
 
-For kernel and SD card file. You can download from [here](https://s3.lvsr.proxy.damp11113.xyz/cdn/MFoES02w-SDcard.zip).
+For kernel and SD card file. You can download from [here](https://s3.lvsr.proxy.damp11113.xyz/cdn/MFoES02w-SDcard.zip) (Based on Alpine linux).
+> [!NOTE]
+>  This image is ONLY compatible with Raspberry Pi Zero 2 W.
+   Other Raspberry Pi models (Pi 1/2/3/4/5, Zero, Zero W) are NOT supported.
 
 ![_DSC2355 (Large)](https://github.com/user-attachments/assets/9174346e-01d2-4880-89c2-acf5ce928ac6)
 ![_DSC2356 (Large)](https://github.com/user-attachments/assets/90924d08-cbba-423b-b7e3-d50870fc424f)
