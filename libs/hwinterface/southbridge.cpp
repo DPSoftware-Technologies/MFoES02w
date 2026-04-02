@@ -1,18 +1,3 @@
-/*
- * southbridge.cpp – RPi02W implementation
- *
- * Threads:
- *   tx_thread_   – SCHED_FIFO, pulls audio frames from ring, SPI transfer
- *   cmd_thread_  – SCHED_FIFO, polls command channel (CS1)
- *
- * Audio path:
- *   send_audio() → sample FIFO → frame assembly → ring_buffer → tx_thread → SPI
- *
- * Overflow policy:
- *   If ring > overflow_drop_threshold %, push_overwrite (drop oldest).
- *   On Pico OVERFLOW status, increment counter; TX continues (Pico self-recovers).
- */
-
 #include "southbridge.h"
 #include "ring_buffer.h"
 #include "spi_device.h"
@@ -46,7 +31,6 @@ static void set_realtime(pthread_t thr, int prio, int cpu) {
 
 namespace southbridge {
 
-/*  */
 class SouthbridgeImpl final : public Southbridge {
 public:
     SouthbridgeImpl(const std::string& audio_dev, Config cfg)

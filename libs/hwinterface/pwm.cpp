@@ -7,9 +7,9 @@
 #include <cmath>
 #include <unistd.h>
 
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 
 static std::string buildChipPath(int chip) {
     return "/sys/class/pwm/pwmchip" + std::to_string(chip);
@@ -19,9 +19,9 @@ static std::string buildChanPath(int chip, int channel) {
     return buildChipPath(chip) + "/pwm" + std::to_string(channel);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 // Constructor / Destructor
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 
 PWM::PWM(int chip, int channel)
     : m_chip(chip), m_channel(channel), m_exported(false),
@@ -37,9 +37,9 @@ PWM::~PWM() {
     try { unexport(); } catch (...) {}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 // Private helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 
 void PWM::doExport() {
     // Check if already exported
@@ -79,9 +79,9 @@ std::string PWM::readAttr(const std::string& attr) const {
     return val;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 // Period
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 
 void PWM::setPeriodNs(uint32_t ns) {
     writeAttr("period", std::to_string(ns));
@@ -91,9 +91,9 @@ uint32_t PWM::getPeriodNs() const {
     return static_cast<uint32_t>(std::stoul(readAttr("period")));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 // Frequency
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 
 void PWM::setFrequencyHz(float hz) {
     if (hz <= 0.0f)
@@ -146,9 +146,9 @@ float PWM::getFrequencyHz() const {
     return 1.0e9f / static_cast<float>(period);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 // Duty Cycle
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 
 void PWM::setDutyCycleNs(uint32_t ns) {
     writeAttr("duty_cycle", std::to_string(ns));
@@ -176,17 +176,17 @@ void PWM::setPulseUs(uint32_t us) {
     setDutyCycleNs(us * 1000u);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 // Polarity
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 
 void PWM::setPolarity(Polarity p) {
     writeAttr("polarity", p == Polarity::INVERSED ? "inversed" : "normal");
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 // Enable / Disable
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 
 void PWM::enable() {
     writeAttr("enable", "1");
@@ -200,9 +200,9 @@ bool PWM::isEnabled() const {
     return readAttr("enable") == "1";
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 // Unexport
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 
 void PWM::unexport() {
     if (!m_exported) return;

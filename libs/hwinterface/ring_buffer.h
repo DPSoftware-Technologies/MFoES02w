@@ -1,11 +1,4 @@
 #pragma once
-/*
- * ring_buffer.h – lock-free SPSC ring buffer for audio frames.
- *
- * Single-Producer Single-Consumer (capture thread → TX thread).
- * Uses std::atomic with acquire/release to avoid mutex overhead.
- * Capacity must be a power of two.
- */
 
 #include <atomic>
 #include <cstddef>

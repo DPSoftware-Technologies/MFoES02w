@@ -189,4 +189,5 @@ void App::stop() {
     }
     
     usleep(100000); 
+    system("clear > /dev/fb0");
 }

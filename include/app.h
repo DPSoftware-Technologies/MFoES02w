@@ -62,16 +62,9 @@ struct TileUpdateHeader {
     uint16_t tw, th;
 };  // 7 bytes
 
-struct CValue { // Custom Values
+struct CValue { // Custom Value
     uint8_t  type;
-    uint16_t v1;
-    uint16_t v2;
-    uint16_t v3;
-    uint16_t v4;
-    uint16_t v5;
-    uint16_t v6;
-    uint16_t v7;
-    uint16_t v8;
+    uint16_t v[8];
 }; // 17 bytes
 
 #pragma pack(pop)
@@ -144,7 +137,7 @@ class App {
         void inputHandle();
 
         // Data input handler
-        CValue cvdata;
+        CValue cvdata = {};
 
         // helper function
         void drawGauge(int x, int y, int r, float value, float minVal, float maxVal);

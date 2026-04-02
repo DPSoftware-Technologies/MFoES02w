@@ -1,7 +1,4 @@
 #pragma once
-/*
- * spi_device.h – thin RAII wrapper around Linux /dev/spidevX.X
- */
 
 #include <cstdint>
 #include <cstddef>

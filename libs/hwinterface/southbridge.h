@@ -1,16 +1,4 @@
 #pragma once
-/*
- * southbridge.h – RPi02W side (C++17, Alpine Linux, /dev/spidev0.0)
- *
- * Usage:
- *   auto sb = southbridge::Southbridge::create("/dev/spidev0.0");
- *   sb->start();                         // launches RT threads
- *   sb->send_audio(pcm_buf, n_samples);  // non-blocking, queued
- *   sb->send_command(R"({"cmd":"vol","val":75})");
- *   auto s = sb->stats();
- *   sb->stop();
- */
-
 #include <cstdint>
 #include <cstddef>
 #include <memory>
@@ -43,8 +31,8 @@ struct Config {
     uint8_t     spi_bits         = 8;
 
     /* CS lines (as /dev/spidev0.X) */
-    std::string audio_device     = "/dev/spidev0.0";
-    std::string cmd_device       = "/dev/spidev0.1";
+    std::string audio_device     = "/dev/spidev0.0";   /* SPI0 CE0 = GPIO 8  */
+    std::string cmd_device       = "/dev/spidev1.0";   /* SPI1 CE2 = GPIO 16 */
 
     /* realtime thread priorities (SCHED_FIFO) */
     int         tx_thread_prio   = 85;

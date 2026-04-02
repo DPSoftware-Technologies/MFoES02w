@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <SPI.h>
+#include <I2S.h> 
 #include <FreeRTOS.h>
 #include <task.h>
 #include <queue.h>
@@ -10,10 +11,21 @@
 
 /*  tunables  */
 #define SB_PICO_AUDIO_QUEUE_DEPTH   32   /* frames buffered for playback  */
-#define SB_PICO_I2S_BCK_PIN         26
-#define SB_PICO_I2S_WS_PIN          27
-#define SB_PICO_I2S_DATA_PIN        28
-#define SB_PICO_PWM_AUDIO_PIN       15   /* fallback if no I2S            */
+
+/*
+ * I2S pins – arduino-pico I2S library uses consecutive GPIO pairs:
+ *   DATA = pin N, BCK = pin N+1, WS = BCK of the NEXT pair (auto)
+ *
+ * Default layout for a PCM5102A / MAX98357A on the right side of Pico:
+ *   GP26 = DIN (DATA), GP27 = BCK, GP28 = WS/LRCK
+ *
+ * Override by passing different values to the SouthbridgePico constructor.
+ */
+#define SB_PICO_I2S_DATA_PIN        26   /* DOUT to DAC                   */
+#define SB_PICO_I2S_BCK_PIN         27   /* bit clock                     */
+#define SB_PICO_I2S_WS_PIN          28   /* word select / LRCK            */
+
+#define SB_PICO_PWM_AUDIO_PIN       15   /* fallback if no I2S DAC wired  */
 
 /*  task priorities  */
 #define SB_TASK_PRIO_SPI_ISR_DEFER  (configMAX_PRIORITIES - 1)  /* 7 */
@@ -33,19 +45,27 @@ typedef void (*SBCommandHandler)(const char* json, size_t len);
 class SouthbridgePico {
 public:
     SouthbridgePico(
-        spi_inst_t* audio_spi = spi0,
+        spi_inst_t* audio_spi     = spi0,
         uint        audio_cs_pin  = 5,
         uint        audio_sck_pin = 2,
         uint        audio_mosi    = 3,
         uint        audio_miso    = 4,
-        spi_inst_t* cmd_spi   = spi1,
+        spi_inst_t* cmd_spi       = spi1,
         uint        cmd_cs_pin    = 13,
         uint        cmd_sck_pin   = 10,
         uint        cmd_mosi      = 11,
-        uint        cmd_miso      = 12
+        uint        cmd_miso      = 12,
+        /* I2S pins – must be consecutive: DATA, then BCK, then WS is BCK+1 */
+        uint        i2s_data_pin  = SB_PICO_I2S_DATA_PIN,
+        uint        i2s_bck_pin   = SB_PICO_I2S_BCK_PIN,
+        uint        i2s_ws_pin    = SB_PICO_I2S_WS_PIN
     );
 
-    /* call from setup() – starts all internal tasks */
+    /*
+     * call from setup() – starts all internal tasks.
+     * use_i2s = true  → arduino-pico I2S library (PCM5102A, MAX98357A, etc.)
+     * use_i2s = false → PWM fallback (no external DAC needed)
+     */
     void begin(bool use_i2s = true);
 
     /* register application-level command handler */
@@ -59,22 +79,29 @@ public:
     uint32_t audioUnderruns()  const { return _underrun_count; }
     uint32_t framesReceived()  const { return _frames_received; }
 
+    /*
+     * These three members must be public: _dma_rx_complete() is a static
+     * free function (ISR) and C++ forbids non-member access to private
+     * members even through a pointer.  The _ prefix signals "internal".
+     */
+    SemaphoreHandle_t _frame_sem;
+    uint8_t           _dma_buf[2][SB_FRAME_BYTES];
+    volatile int      _dma_active_buf = 0;
+
 private:
-    /* SPI hardware */
     spi_inst_t* _audio_spi;
     spi_inst_t* _cmd_spi;
     uint _audio_cs, _audio_sck, _audio_mosi, _audio_miso;
     uint _cmd_cs,   _cmd_sck,   _cmd_mosi,   _cmd_miso;
 
+    I2S  _i2s;
+    uint _i2s_data_pin;
+    uint _i2s_bck_pin;
+    uint _i2s_ws_pin;
+
     bool _use_i2s;
 
-    /* FreeRTOS objects */
-    QueueHandle_t    _audio_queue;   /* sb_audio_frame_t* pointers (pool) */
-    SemaphoreHandle_t _frame_sem;    /* signals SPI defer task            */
-
-    /* DMA double-buffer */
-    uint8_t _dma_buf[2][SB_FRAME_BYTES];
-    volatile int _dma_active_buf = 0;
+    QueueHandle_t    _audio_queue;
 
     /* stats */
     volatile uint32_t _overflow_count  = 0;

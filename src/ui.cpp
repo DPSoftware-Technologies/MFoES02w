@@ -321,21 +321,10 @@ void App::renderDataInInfo() {
     gfx.setTextColor(0xFFFFFFFF);
     gfx.setTextSize(2);
     
-    uint16_t values[8];
-
-    values[0] = cvdata.v1;
-    values[1] = cvdata.v2;
-    values[2] = cvdata.v3;
-    values[3] = cvdata.v4;
-    values[4] = cvdata.v5;
-    values[5] = cvdata.v6;
-    values[6] = cvdata.v7;
-    values[7] = cvdata.v8;
-
     for (int i = 0; i < 8; i++) {
         gfx.setCursor(20, 50 + (i * 15));
-        gfx.writeTextF("CV%d: %u", i + 1, values[i]);
+        gfx.writeTextF("CV%d: %u", i + 1, cvdata.v[i]);
     }
 
-    drawGauge(50, 200, 10, cvdata.v1, 0, 100);
+    drawGauge(50, 200, 10, cvdata.v[0], 0, 100);
 }

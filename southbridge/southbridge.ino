@@ -6,13 +6,22 @@
 #include "SouthbridgePico.h"
 
 /*  WiFi credentials  */
-const char* WIFI_SSID = "YOUR_SSID";
-const char* WIFI_PASS = "YOUR_PASSWORD";
+const char* WIFI_SSID = "MotorPool24"; // Private WiFi network
+const char* WIFI_PASS = "strykernet24";
 
 /*  Southbridge instance  */
+/*
+ * SouthbridgePico(audio_spi, audio_cs, audio_sck, audio_mosi, audio_miso,
+ *                  cmd_spi,   cmd_cs,   cmd_sck,   cmd_mosi,   cmd_miso,
+ *                  i2s_data,  i2s_bck,  i2s_ws)
+ *
+ * i2s_bck and i2s_ws MUST be consecutive GPIO numbers (ws = bck + 1).
+ * The arduino-pico I2S library enforces this.
+ */
 SouthbridgePico sb(
-    spi0,  5,  2,  3,  4,   /* audio: CS0=5, SCK=2, MOSI=3, MISO=4  */
-    spi1, 13, 10, 11, 12    /* cmd:   CS1=13,SCK=10,MOSI=11,MISO=12  */
+    spi0,  5,  2,  3,  4,   /* SPI0 audio slave: CS0=5, SCK=2, MOSI=3, MISO=4 */
+    spi1, 13, 10, 11, 12,   /* SPI1 cmd slave:   CS1=13,SCK=10,MOSI=11,MISO=12 */
+    26, 27, 28               /* I2S: DATA=26, BCK=27, WS=28 (BCK+1)             */
 );
 
 /*  command handler  */
@@ -31,6 +40,7 @@ void handleCommand(const char* json, size_t /*len*/) {
 
 /*  Network task  */
 void taskNetwork(void* /*arg*/) {
+    Serial.println("Connecting to wifi");
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     while (WiFi.status() != WL_CONNECTED) {
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -113,20 +123,44 @@ void taskGPIO(void* /*arg*/) {
 /*  setup  */
 void setup() {
     Serial.begin(115200);
-    delay(200);
+    delay(2000);  // Extended delay for USB enumeration
     Serial.println("Southbridge Pico2W starting...");
+    Serial.flush();  // ← CRITICAL: Ensure print is sent before FreeRTOS starts
 
-    /* Start southbridge (creates audio tasks internally) */
-    sb.begin(/* use_i2s = */ true);
+    /* Register command handler BEFORE starting southbridge */
     sb.onCommand(handleCommand);
 
+    Serial.println("Calling sb.begin(true)...");
+    Serial.flush();
+    
+    /* Start southbridge (creates audio tasks internally) */
+    sb.begin(true);
+
+    Serial.println("sb.begin() returned. Creating application tasks...");
+    Serial.flush();
+
+    delay(500);  // Give southbridge time to stabilize
+
     /* Application tasks */
-    xTaskCreate(taskNetwork, "net",     1024, nullptr, SB_TASK_PRIO_NETWORK, nullptr);
-    xTaskCreate(taskGPS,     "gps",      512, nullptr, SB_TASK_PRIO_GPS,     nullptr);
-    xTaskCreate(taskSensor,  "sensor",   256, nullptr, SB_TASK_PRIO_SENSOR,  nullptr);
-    xTaskCreate(taskGPIO,    "gpio",     256, nullptr, SB_TASK_PRIO_SENSOR,  nullptr);
+    BaseType_t res;
+    res = xTaskCreate(taskNetwork, "net", 8192, nullptr, 2, nullptr);
+    if (res != pdPASS) Serial.println("ERROR: taskNetwork creation failed");
+    else Serial.println("taskNetwork created OK");
+    
+    res = xTaskCreate(taskGPS, "gps", 1024, nullptr, 2, nullptr);
+    if (res != pdPASS) Serial.println("ERROR: taskGPS creation failed");
+    else Serial.println("taskGPS created OK");
+    
+    res = xTaskCreate(taskSensor, "sensor", 512, nullptr, 1, nullptr);
+    if (res != pdPASS) Serial.println("ERROR: taskSensor creation failed");
+    else Serial.println("taskSensor created OK");
+    
+    res = xTaskCreate(taskGPIO, "gpio", 512, nullptr, 1, nullptr);
+    if (res != pdPASS) Serial.println("ERROR: taskGPIO creation failed");
+    else Serial.println("taskGPIO created OK");
 
     Serial.println("All tasks created. FreeRTOS scheduler running.");
+    Serial.flush();
 }
 
 void loop() {
