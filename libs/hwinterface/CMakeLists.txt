@@ -11,6 +11,7 @@ add_library(hwinterface
     ads1115.cpp
     usbd_client.cpp
     gt911.cpp
+    spi_dev.cpp
     southbridge.cpp
     pwm.cpp
 )

@@ -1,6 +1,6 @@
 #include "southbridge.h"
 #include "ring_buffer.h"
-#include "spi_device.h"
+#include "spi_dev.h"
 #include "protocol.h"
 
 #include <vector>
