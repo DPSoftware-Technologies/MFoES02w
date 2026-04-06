@@ -85,8 +85,46 @@ target_link_libraries(mfoes02w
 )
 
 
+# OTA Daemon - Completely static, self-contained
+add_executable(otad
+    services/otad.cpp
+    libs/hwinterface/usbd_client.cpp
+    libs/libgfx/GFX.cpp
+)
+
+target_include_directories(otad
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/libs
+)
+
+target_link_libraries(otad
+    PRIVATE
+        pthread
+)
+
+# Add -static flag to ensure complete static linking (no external dependencies)
+target_link_options(otad PRIVATE -static)
+
+
+# USB Daemon - Completely static, self-contained
+add_executable(usbd
+    services/usbd.cpp
+)
+
+target_include_directories(usbd
+    PRIVATE
+)
+
+target_link_libraries(usbd
+    PRIVATE
+        pthread
+)
+
+# Add -static flag to ensure complete static linking (no external dependencies)
+target_link_options(usbd PRIVATE -static)
+
 #  Install rules 
-install(TARGETS mfoes02w
+install(TARGETS mfoes02w otad usbd
     RUNTIME DESTINATION bin
 )
 

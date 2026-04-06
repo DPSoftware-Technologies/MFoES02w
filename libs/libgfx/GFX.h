@@ -5,31 +5,6 @@
 #include <cstdlib>
 #include <cstring>
 
-// ===== BACKEND SELECTION =====================================================
-//
-// Two back-ends, selected at compile time:
-//
-//  1. DRM/KMS dumb-buffer  (default — define GFX_USE_DRM_DUMB or nothing)
-//     Allocates GPU-side dumb buffers via DRM_IOCTL_MODE_CREATE_DUMB,
-//     memory-maps them for CPU writes, and page-flips via KMS with zero copy.
-//     No OpenGL, no EGL, no GBM.  Uses XRGB8888 (32 bpp) — full RGB888 output.
-//     Build: g++ -O2 -std=c++14 -o demo demo.cpp GFX.cpp -ldrm
-//
-//  2. /dev/fb0 framebuffer  (define GFX_USE_FB)
-//     Legacy CPU-rendering into mmap'd /dev/fb0.
-//     Requires the framebuffer to be configured at 32 bpp (ARGB8888).
-//     Supports triple-buffering with malloc buffers + memcpy.
-//     Build: g++ -O2 -std=c++14 -DGFX_USE_FB -o demo demo.cpp GFX.cpp
-//
-
-#if !defined(GFX_USE_DRM_DUMB) && !defined(GFX_USE_FB)
-#  define GFX_USE_DRM_DUMB
-#endif
-
-#ifdef GFX_USE_DRM_DUMB
-#  include <drm/drm_mode.h>
-#endif
-
 // ===== COLOR FORMAT: ARGB8888 ================================================
 //
 // All color values are 32-bit ARGB8888:
@@ -118,21 +93,12 @@ typedef struct {
  */
 class LinuxGFX {
 public:
-
-#ifdef GFX_USE_DRM_DUMB
-    /**
-     * DRM/KMS dumb-buffer back-end constructor.
-     * @param drmdev  DRM/KMS device node (e.g. "/dev/dri/card0").
-     */
-    explicit LinuxGFX(const char *drmdev = "/dev/dri/card0");
-#else
     /**
      * Framebuffer back-end constructor.
      * @param fbdev  Framebuffer device node (e.g. "/dev/fb0").
      *               The framebuffer must be at 32 bpp.
      */
     explicit LinuxGFX(const char *fbdev = "/dev/fb0");
-#endif
 
     virtual ~LinuxGFX();
 
@@ -242,30 +208,6 @@ public:
 
     static uint32_t fromRGB565(uint16_t c);
 
-    // ===== PRESENT / SWAP BUFFERS ============================================
-    /**
-     * Present the rendered frame.
-     *
-     *  DRM dumb-buffer back-end:
-     *    Flips draw ↔ display buffers via KMS.  Zero memcpy.
-     *    @param async      true  = non-blocking drmModePageFlip (vblank-synced);
-     *                      false = blocking drmModeSetCrtc (immediate).
-     *    @param autoclear  Zero the new draw buffer after the flip.
-     *
-     *  Framebuffer back-end:
-     *    With multi-buffering: memcpy to /dev/fb0.
-     *    Without multi-buffering: no-op (direct writes already visible).
-     */
-#ifdef GFX_USE_DRM_DUMB
-    void swapBuffers(bool async = true, bool autoclear = true);
-
-    /** Block until a pending non-blocking page-flip completes. */
-    void waitForFlip();
-
-    /** Returns true if a non-blocking flip is currently in flight. */
-    bool isFlipPending() const { return m_flipPending; }
-
-#else
     void swapBuffers(bool autoclear = true);
 
     // ===== MULTI-BUFFER API (Framebuffer back-end only) ======================
@@ -284,7 +226,6 @@ public:
 
     bool      attachExternalBuffer (uint8_t bufferIndex, uint32_t *pBuffer);
     bool      detachExternalBuffer (uint8_t bufferIndex);
-#endif
 
 protected:
     /// Protected tag-based constructor used by GFXcanvas to initialise the
@@ -314,43 +255,6 @@ protected:
     virtual void drawFastVLineInternal(int16_t x, int16_t y, int16_t h, uint32_t color);
     virtual void drawFastHLineInternal(int16_t x, int16_t y, int16_t w, uint32_t color);
 
-    // ===== Back-end specific members =========================================
-#ifdef GFX_USE_DRM_DUMB
-
-    struct DumbBuf {
-        uint32_t  handle;   ///< GEM object handle
-        uint32_t  pitch;    ///< Bytes per scanline
-        uint64_t  size;     ///< Total size in bytes
-        uint32_t  fbId;     ///< KMS framebuffer ID
-        uint32_t *map;      ///< CPU-writable mmap pointer (XRGB8888 pixels)
-    };
-
-    int      m_drmFd;
-    uint32_t m_connId;
-    uint32_t m_crtcId;
-    uint32_t m_modeIdx;
-
-    struct drm_mode_modeinfo m_selectedMode;
-
-    static constexpr int kNumDrmBufs = 2;
-    DumbBuf  m_drm[kNumDrmBufs];
-
-    uint8_t   m_drawIdx;
-    uint8_t   m_dispIdx;
-    bool      m_flipPending;
-    uint32_t *m_pBuffer;   ///< Alias → m_drm[m_drawIdx].map
-
-    bool initDrm    (const char *drmdev);
-    void cleanupDrm ();
-    bool allocDumbBuf(DumbBuf &b);
-    void freeDumbBuf (DumbBuf &b);
-
-    static void pageFlipHandler(int fd, unsigned int seq,
-                                unsigned int tv_sec, unsigned int tv_usec,
-                                void *data);
-
-#else // /dev/fb0 Framebuffer back-end
-
     int       m_fbFd;
     uint8_t  *m_pFbMem;
     size_t    m_fbMemSize;
@@ -367,8 +271,6 @@ protected:
     void _initializeMultiBuffer();
     void _cleanupMultiBuffer();
     void _flushToFb();
-
-#endif // GFX_USE_DRM_DUMB
 
     // ===== Common members ====================================================
     int16_t  m_width, m_height;

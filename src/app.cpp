@@ -3,8 +3,6 @@
 #include <cstring>
 #include <pthread.h>
 
-#define RECV_BUF_SIZE (1 + FRAME_SIZE)
-
 App::App()
     :   gfx("/dev/fb0"),
         i2c("/dev/i2c-1"),

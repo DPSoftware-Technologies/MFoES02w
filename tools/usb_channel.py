@@ -27,8 +27,8 @@ FLAG_ERROR = 0x04
 DEFAULT_VID = 0x750C   # Linux Foundation
 DEFAULT_PID = 0x0544   # Multifunction Composite Gadget
 
-USB_BUF_SIZE   = 65536         # 64 KB per USB transfer
-MAX_FRAME_SIZE = 512 * 1024    # 512 KB
+USB_BUF_SIZE   = 65536              # 64 KB per USB bulk transfer (libusb limit)
+MAX_FRAME_SIZE = 512 * 1024         # 512 KB — max payload in a single MUBD frame
 
 def encode_frame(channel: int, flags: int, payload: bytes = b"") -> bytes:
     hdr = struct.pack(HEADER_FMT,
@@ -53,16 +53,31 @@ class UsbChannel:
 
 
     def send(self, data: bytes) -> bool:
-        """Send data over this channel. Returns False if channel is closed."""
+        """
+        Send data over this channel.
+
+        If data fits in one USB transfer (≤ USB_BUF_SIZE - HEADER_SIZE bytes),
+        it is sent as a single MUBD frame.  Larger payloads are automatically
+        split by send_large() — each piece becomes its own complete frame and
+        the receiver must reassemble them.  For the OTA use-case the receiver
+        (usbd / UsbdClient) reassembles based on the 4-byte length prefix, so
+        large sends are transparent to the application layer.
+        """
         if not self._open:
             return False
-        return self._mgr._send_frame(self.channel_id, FLAG_DATA, data)
+        max_payload = USB_BUF_SIZE - HEADER_SIZE  # 65524 bytes
+        if len(data) <= max_payload:
+            return self._mgr._send_frame(self.channel_id, FLAG_DATA, data)
+        return self.send_large(data, chunk_size=max_payload)
 
-    def send_large(self, data: bytes, chunk_size: int = USB_BUF_SIZE) -> bool:
-        """Send large data, split into chunks automatically."""
+    def send_large(self, data: bytes, chunk_size: int = USB_BUF_SIZE - HEADER_SIZE) -> bool:
+        """Send large data split into chunks, each as its own complete MUBD frame."""
+        max_payload = USB_BUF_SIZE - HEADER_SIZE  # never exceed one USB transfer
+        if chunk_size > max_payload:
+            chunk_size = max_payload
         for i in range(0, len(data), chunk_size):
             chunk = data[i:i + chunk_size]
-            if not self.send(chunk):
+            if not self._mgr._send_frame(self.channel_id, FLAG_DATA, chunk):
                 return False
         return True
 
@@ -248,14 +263,30 @@ class UsbChannelManager:
 
 
     def _send_frame(self, channel: int, flags: int, payload: bytes = b"") -> bool:
+        """
+        Send one complete MUBD frame as a single USB bulk transfer.
+
+        A MUBD frame MUST be delivered as one USB write — usbd on the device
+        processes each bulk transfer independently and expects a complete
+        [MUBD header + payload] in each one. Splitting a frame across multiple
+        writes corrupts the framing.
+
+        Maximum payload per frame is USB_BUF_SIZE - HEADER_SIZE (= 65524 bytes).
+        Callers sending larger data must use send_large() which splits at the
+        logical message level (each split piece becomes its own complete frame).
+        """
         if self._ep_out is None:
             return False
         frame = encode_frame(channel, flags, payload)
-        print(f"[debug] sending frame ch={channel} flags={flags} len={len(frame)} to ep={self._ep_out.bEndpointAddress:#04x}")
+        if len(frame) > USB_BUF_SIZE:
+            print(f"[usb] _send_frame: frame too large ({len(frame)} bytes) — "
+                  f"use send_large() for payloads > {USB_BUF_SIZE - HEADER_SIZE} bytes")
+            return False
+        print(f"[debug] sending frame ch={channel} flags={flags} "
+              f"payload={len(payload)} frame={len(frame)} to ep={self._ep_out.bEndpointAddress:#04x}")
         with self._tx_lock:
             try:
-                for i in range(0, len(frame), USB_BUF_SIZE):
-                    self._ep_out.write(frame[i:i + USB_BUF_SIZE], timeout=5000)
+                self._ep_out.write(frame, timeout=5000)
                 return True
             except usb.core.USBError as e:
                 print(f"[usb] send error: {e}")
