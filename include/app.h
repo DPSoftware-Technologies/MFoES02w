@@ -113,8 +113,8 @@ class App {
         uint16_t frameBufA[FRAME_PIXELS];  // USB thread writes
         uint16_t frameBufB[FRAME_PIXELS];  // render thread reads
         bool frameReady;
-        pthread_mutex_t frameMutex;
 #endif
+        pthread_mutex_t frameMutex;
         // touch
         std::queue<TouchEventData> touchQueue;
         std::mutex touchQueueMutex;
