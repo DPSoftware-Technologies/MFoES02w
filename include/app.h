@@ -96,9 +96,12 @@ class App {
         }
     private:
         // Hardware init
-        LinuxGFX   gfx;
+        char gfx_buffer[sizeof(LinuxGFX)]; 
+    
+        // This is what the library uses (a simple reference)
+        LinuxGFX& gfx = *(LinuxGFX*)gfx_buffer;
 #ifndef DESKTOP
-        I2CBus     i2c;
+        I2CBus i2c;
         UsbdClient usbdc;
         GT911 touch;
         PWM buz;

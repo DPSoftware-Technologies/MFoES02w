@@ -5,28 +5,27 @@
 
 App::App()
 #ifndef DESKTOP
-    :   gfx("/dev/fb0"),
-        // use real hardware
-        i2c("/dev/i2c-1"),
+    :   i2c("/dev/i2c-1"),
         touch(i2c, 17, 27),  // int_pin=17, rst_pin=27
         buz(0, 0),
         frameReady(false),
-#else
-    :   gfx("MFoES02w Demo", 1280, 720),
 #endif
         ui(0, 400, 1280, 320, uisys::Font::Medium())
 {
 #ifndef DESKTOP
+    new (gfx_buffer) LinuxGFX("/dev/fb0");
     pthread_mutex_init(&frameMutex, nullptr);
     memset(frameBufA, 0, sizeof(frameBufA));
     memset(frameBufB, 0, sizeof(frameBufB));
+#else
+    new (gfx_buffer) LinuxGFX("MFoES02w Demo", 1280, 720);
 #endif
 }
 
 App::~App() {
-#ifndef DESKTOP
-    pthread_mutex_destroy(&frameMutex);
-#endif
+    if (running) {
+        stop();
+    }
 }
 
 void App::init() {
@@ -227,6 +226,8 @@ void App::ostop(bool restart) {
 
 void App::stop() {
     running = false; 
+
+    pthread_mutex_destroy(&frameMutex);
 #ifndef DESKTOP 
     buz.setFrequencyHz(500.0f, 50.0f);
     buz.enable();
@@ -243,7 +244,6 @@ void App::stop() {
     }
     usleep(100000); 
     system("clear > /dev/fb0");
-#else
-    delete gfx;
 #endif
+    gfx.~LinuxGFX();
 }
