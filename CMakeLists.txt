@@ -56,6 +56,9 @@ endif()
 if(DESKTOP_BUILD)
     add_compile_definitions(DESKTOP GFXSDL)
     message(STATUS "Desktop build ENABLED with SDL graphics")
+    find_package(SDL2 REQUIRED)
+else()
+    message(STATUS "Embedded build - otad and usbd targets will be built")
 endif()
 
 
@@ -91,48 +94,56 @@ target_link_libraries(mfoes02w
 )
 
 
-# OTA Daemon - Completely static, self-contained
-add_executable(otad
-    services/otad.cpp
-    libs/hwinterface/usbd_client.cpp
-    libs/libgfx/GFX.cpp
-)
+# OTA Daemon - Only build on embedded systems, not on desktop
+if(NOT DESKTOP_BUILD)
+    add_executable(otad
+        services/otad.cpp
+        libs/hwinterface/usbd_client.cpp
+    )
 
-target_include_directories(otad
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/libs
-)
+    target_include_directories(otad
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/libs
+    )
 
-target_link_libraries(otad
-    PRIVATE
-        pthread
-)
+    target_link_libraries(otad
+        PRIVATE
+            pthread
+            libgfx
+    )
+else()
+    message(STATUS "Skipping otad build (desktop mode)")
+endif()
 
-# Add -static flag to ensure complete static linking (no external dependencies)
-target_link_options(otad PRIVATE -static)
 
+# USB Daemon - Only build on embedded systems, not on desktop
+if(NOT DESKTOP_BUILD)
+    add_executable(usbd
+        services/usbd.cpp
+    )
 
-# USB Daemon - Completely static, self-contained
-add_executable(usbd
-    services/usbd.cpp
-)
+    target_include_directories(usbd
+        PRIVATE
+    )
 
-target_include_directories(usbd
-    PRIVATE
-)
-
-target_link_libraries(usbd
-    PRIVATE
-        pthread
-)
-
-# Add -static flag to ensure complete static linking (no external dependencies)
-target_link_options(usbd PRIVATE -static)
+    target_link_libraries(usbd
+        PRIVATE
+            pthread
+    )
+else()
+    message(STATUS "Skipping usbd build (desktop mode)")
+endif()
 
 #  Install rules 
-install(TARGETS mfoes02w otad usbd
-    RUNTIME DESTINATION bin
-)
+if(NOT DESKTOP_BUILD)
+    install(TARGETS mfoes02w otad usbd
+        RUNTIME DESTINATION bin
+    )
+else()
+    install(TARGETS mfoes02w
+        RUNTIME DESTINATION bin
+    )
+endif()
 
 #  Summary 
 message(STATUS "")
