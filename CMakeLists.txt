@@ -18,13 +18,12 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 #  Options 
 option(STATIC_LINK    "Link statically (required for Alpine musl)" ON)
-option(ENABLE_TESTS   "Build unit tests"                           OFF)
-option(ENABLE_LOGGING "Enable debug logging"                       OFF)
+option(ENABLE_TESTS   "Build unit tests"                         OFF)
+option(ENABLE_LOGGING "Enable debug logging"                     OFF)
 option(DESKTOP_BUILD  "Build for desktop with SDL graphics"       OFF)
 
 #  Static linking for musl 
 if(STATIC_LINK)
-    # Link most things statically but NOT GPU/display libs
     add_link_options(
         -static-libgcc
         -static-libstdc++
@@ -90,49 +89,53 @@ target_link_libraries(mfoes02w
         uisys 
 )
 
+if(NOT DESKTOP_BUILD)
+    # OTA Daemon - Completely static, self-contained
+    add_executable(otad
+        services/otad.cpp
+        libs/hwinterface/usbd_client.cpp
+        libs/libgfx/GFX.cpp
+    )
 
-# OTA Daemon - Completely static, self-contained
-add_executable(otad
-    services/otad.cpp
-    libs/hwinterface/usbd_client.cpp
-    libs/libgfx/GFX.cpp
-)
+    target_include_directories(otad
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/libs
+    )
 
-target_include_directories(otad
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/libs
-)
+    target_link_libraries(otad
+        PRIVATE
+            pthread
+    )
 
-target_link_libraries(otad
-    PRIVATE
-        pthread
-)
+    target_link_options(otad PRIVATE -static)
 
-# Add -static flag to ensure complete static linking (no external dependencies)
-target_link_options(otad PRIVATE -static)
+    # USB Daemon - Completely static, self-contained
+    add_executable(usbd
+        services/usbd.cpp
+    )
 
+    target_include_directories(usbd
+        PRIVATE
+    )
 
-# USB Daemon - Completely static, self-contained
-add_executable(usbd
-    services/usbd.cpp
-)
+    target_link_libraries(usbd
+        PRIVATE
+            pthread
+    )
 
-target_include_directories(usbd
-    PRIVATE
-)
-
-target_link_libraries(usbd
-    PRIVATE
-        pthread
-)
-
-# Add -static flag to ensure complete static linking (no external dependencies)
-target_link_options(usbd PRIVATE -static)
+    target_link_options(usbd PRIVATE -static)
+endif()
 
 #  Install rules 
-install(TARGETS mfoes02w otad usbd
-    RUNTIME DESTINATION bin
-)
+if(DESKTOP_BUILD)
+    install(TARGETS mfoes02w
+        RUNTIME DESTINATION bin
+    )
+else()
+    install(TARGETS mfoes02w otad usbd
+        RUNTIME DESTINATION bin
+    )
+endif()
 
 #  Summary 
 message(STATUS "")
