@@ -157,7 +157,7 @@ LinuxGFX::LinuxGFX(const char *fbdev)
 }
 #endif
 
-LinuxGFX::~LinuxGFX() {
+void LinuxGFX::stop() {
 #ifdef GFXSDL
     if (m_pTexture) SDL_DestroyTexture(m_pTexture);
     if (m_pRenderer) SDL_DestroyRenderer(m_pRenderer);
@@ -169,6 +169,10 @@ LinuxGFX::~LinuxGFX() {
     if (m_pFbMem && m_pFbMem != MAP_FAILED) munmap(m_pFbMem, m_fbMemSize);
     if (m_fbFd >= 0) close(m_fbFd);
 #endif
+}
+
+LinuxGFX::~LinuxGFX() {
+    stop();
 }
 
 void LinuxGFX::setPixel(int16_t x, int16_t y, uint32_t color) {

@@ -4,25 +4,22 @@
 #include <pthread.h>
 
 App::App()
-    :
 #ifndef DESKTOP
+    :   gfx("/dev/fb0"),
         i2c("/dev/i2c-1"),
         touch(i2c, 17, 27),  // int_pin=17, rst_pin=27
         buz(0, 0),
         frameReady(false),
+#else
+    :   gfx("MFoES02w Demo", 1280, 720),
 #endif
         ui(0, 400, 1280, 320, uisys::Font::Medium())
 {
+    pthread_mutex_init(&frameMutex, nullptr);
 #ifndef DESKTOP
-    new (gfx_buffer) LinuxGFX("/dev/fb0");
-
     memset(frameBufA, 0, sizeof(frameBufA));
     memset(frameBufB, 0, sizeof(frameBufB));
-#else
-    new (gfx_buffer) LinuxGFX("MFoES02w Demo", 1280, 720);
-#endif
-
-    pthread_mutex_init(&frameMutex, nullptr);
+#endif    
 }
 
 App::~App() {
@@ -57,6 +54,11 @@ void App::init() {
         pthread_mutex_unlock(&frameMutex);
         std::lock_guard<std::mutex> lock(touchQueueMutex);
         touchQueue.push(e);  
+#ifndef DESKTOP
+        buz.set(1); 
+        usleep(25000); 
+        buz.set(0); 
+#endif
     });
 
     touch.onMove([this](const TouchEventData& e) {
@@ -248,5 +250,5 @@ void App::stop() {
     usleep(100000); 
     system("clear > /dev/fb0");
 #endif
-    gfx.~LinuxGFX();
+    gfx.stop();
 }

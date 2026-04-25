@@ -96,10 +96,7 @@ class App {
         }
     private:
         // Hardware init
-        char gfx_buffer[sizeof(LinuxGFX)]; 
-    
-        // This is what the library uses (a simple reference)
-        LinuxGFX& gfx = *(LinuxGFX*)gfx_buffer;
+        LinuxGFX gfx;
 #ifndef DESKTOP
         I2CBus i2c;
         UsbdClient usbdc;
