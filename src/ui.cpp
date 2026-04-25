@@ -13,6 +13,7 @@ void App::render(bool forceRender) {
     }
 
     // application zone
+#ifndef DESKTOP
     if (RRFDTS || forceRender) {
         if (hasFrame) {
             int ox = (sw - SCREEN_W) / 2;
@@ -23,7 +24,8 @@ void App::render(bool forceRender) {
         RRFDTS = false;
         needRender = true;
     }
-    
+#endif
+
     // user zone
     if (show_data_in) {
         renderDataInInfo();
@@ -158,7 +160,13 @@ void App::initSysUI() {
 
 void App::initDemoUI() {
     ui.addButton("fire",  50,  600, 180, 60, "FIRE",  uisys::ButtonMode::TRIGGER,
-    [this](int s){ buz.set(1); usleep(50000); buz.set(0); });
+    [this](int s){ 
+#ifndef DESKTOP
+        buz.set(1); 
+        usleep(50000); 
+        buz.set(0); 
+#endif
+    });
 
     ui.addButton("arm",   250, 600, 180, 60, "ARM",   uisys::ButtonMode::TOGGLE,
         [this](int s){  },
@@ -166,7 +174,9 @@ void App::initDemoUI() {
     
     ui.addButton("boost", 450, 600, 180, 60, "BOOST", uisys::ButtonMode::HOLD,
         [this](int s){
+#ifndef DESKTOP
             buz.set((s == 3) ? 1 : 0); 
+#endif
         },
         uisys::ButtonTheme::HUD());
 
@@ -225,6 +235,7 @@ void App::initDemoUI() {
     ui.getSpinBox("speed")->setVisible(false);
     ui.getSpinBox("gain2")->setVisible(false);
 }
+
 void App::initSidebarBTNs() {
     ui.addButton("sdata", 1075, 360, 180, 50, "Show Data", uisys::ButtonMode::TOGGLE,
         [this](int s){

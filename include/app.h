@@ -13,15 +13,14 @@
 #include <unistd.h>
 
 #define APP_FPS 60
+#define SCREEN_W     1280
+#define SCREEN_H     720
 
 #ifndef DESKTOP
 #include "hwinterface/i2c_dev.h"
 #include "hwinterface/usbd_client.h"
 #include "hwinterface/pwm.h"
 
-
-#define SCREEN_W     1280
-#define SCREEN_H     720
 #define FRAME_PIXELS (SCREEN_W * SCREEN_H)
 #define FRAME_SIZE   (FRAME_PIXELS * 2)
 
@@ -108,7 +107,6 @@ class App {
         pthread_t usb_thread;
         static void* usbThreadFunc(void* arg);
         void usbLoop();
-        void initSysUI();
 
         // DTS
         bool hasFrame = false;
@@ -137,6 +135,7 @@ class App {
         bool running = true;
         
         // app init
+        void initSysUI();
         void initDemoUI();
         void initSidebarBTNs();
 
