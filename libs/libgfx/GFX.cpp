@@ -18,7 +18,84 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
+
+#ifdef GFXSDL
+#include <SDL2/SDL.h>
+#else
 #include <linux/fb.h>
+#endif
+
+#ifdef GFXSDL
+
+LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
+    : m_pWindow(nullptr), m_pRenderer(nullptr), m_pTexture(nullptr),
+      m_pSurfaceBuffer(nullptr), m_mouseX(0), m_mouseY(0), m_shouldQuit(false),
+      m_pBuffer(nullptr),
+      m_width(width), m_height(height),
+      m_cursorX(0), m_cursorY(0),
+      m_textColor(GFX_WHITE), m_textBgColor(GFX_TRANSPARENT),
+      m_textSizeX(1), m_textSizeY(1),
+      m_textWrap(true), m_rotation(0),
+      m_inverted(false), m_inTransaction(false),
+      m_pFont(nullptr), m_fontSizeMultiplied(true)
+{
+    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+        fprintf(stderr, "GFX: SDL_Init failed: %s\n", SDL_GetError());
+        return;
+    }
+
+    m_pWindow = SDL_CreateWindow(
+        title ? title : "GFX Window",
+        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_CENTERED,
+        width, height,
+        SDL_WINDOW_SHOWN
+    );
+
+    if (!m_pWindow) {
+        fprintf(stderr, "GFX: SDL_CreateWindow failed: %s\n", SDL_GetError());
+        SDL_Quit();
+        return;
+    }
+
+    m_pRenderer = SDL_CreateRenderer(m_pWindow, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (!m_pRenderer) {
+        fprintf(stderr, "GFX: SDL_CreateRenderer failed: %s\n", SDL_GetError());
+        SDL_DestroyWindow(m_pWindow);
+        SDL_Quit();
+        return;
+    }
+
+    m_pSurfaceBuffer = (uint32_t*)calloc(width * height, sizeof(uint32_t));
+    if (!m_pSurfaceBuffer) {
+        fprintf(stderr, "GFX: calloc failed for surface buffer\n");
+        SDL_DestroyRenderer(m_pRenderer);
+        SDL_DestroyWindow(m_pWindow);
+        SDL_Quit();
+        return;
+    }
+
+    m_pTexture = SDL_CreateTexture(
+        m_pRenderer,
+        SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING,
+        width, height
+    );
+
+    if (!m_pTexture) {
+        fprintf(stderr, "GFX: SDL_CreateTexture failed: %s\n", SDL_GetError());
+        free(m_pSurfaceBuffer);
+        SDL_DestroyRenderer(m_pRenderer);
+        SDL_DestroyWindow(m_pWindow);
+        SDL_Quit();
+        return;
+    }
+
+    m_pBuffer = m_pSurfaceBuffer;
+    fprintf(stderr, "GFX: SDL window %s OK (%dx%d @ 32bpp ARGB8888)\n", title, width, height);
+}
+
+#else
 
 LinuxGFX::LinuxGFX(const char *fbdev)
     : m_fbFd(-1), m_pFbMem(nullptr), m_fbMemSize(0),
@@ -78,11 +155,20 @@ LinuxGFX::LinuxGFX(const char *fbdev)
     fprintf(stderr, "GFX: framebuffer %s OK (%dx%d @ %d bpp ARGB8888, pitch=%d)\n",
             dev, m_width, m_height, m_depth, m_pitch);
 }
+#endif
 
 LinuxGFX::~LinuxGFX() {
+#ifdef GFXSDL
+    if (m_pTexture) SDL_DestroyTexture(m_pTexture);
+    if (m_pRenderer) SDL_DestroyRenderer(m_pRenderer);
+    if (m_pWindow) SDL_DestroyWindow(m_pWindow);
+    if (m_pSurfaceBuffer) free(m_pSurfaceBuffer);
+    SDL_Quit();
+#else
     _cleanupMultiBuffer();
     if (m_pFbMem && m_pFbMem != MAP_FAILED) munmap(m_pFbMem, m_fbMemSize);
     if (m_fbFd >= 0) close(m_fbFd);
+#endif
 }
 
 void LinuxGFX::setPixel(int16_t x, int16_t y, uint32_t color) {
@@ -119,9 +205,18 @@ void LinuxGFX::drawRGBBitmap(int16_t x, int16_t y, uint32_t *bitmap, int16_t w, 
 }
 
 void LinuxGFX::_flushToFb() {
+#ifdef GFXSDL
+    if (!m_pTexture || !m_pSurfaceBuffer) return;
+    
+    SDL_UpdateTexture(m_pTexture, nullptr, m_pSurfaceBuffer, m_width * sizeof(uint32_t));
+    SDL_RenderClear(m_pRenderer);
+    SDL_RenderCopy(m_pRenderer, m_pTexture, nullptr, nullptr);
+    SDL_RenderPresent(m_pRenderer);
+#else
     if (!m_pFbMem || !m_pBuffer) return;
     if ((uint8_t*)m_pBuffer == m_pFbMem) return;
     memcpy(m_pFbMem, m_pBuffer, (size_t)m_width * (size_t)m_height * 4);
+#endif
 }
 
 void LinuxGFX::_initializeMultiBuffer() {
@@ -706,6 +801,82 @@ uint32_t LinuxGFX::fromRGB565(uint16_t c) {
     uint8_t b = ( c        & 0x1F) << 3;   // 5-bit → 8-bit
     return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
 }
+
+// =============================================================================
+//  SDL Event Handling (SDL back-end only)
+// =============================================================================
+
+#ifdef GFXSDL
+
+bool LinuxGFX::processEvents() {
+    if (!m_pWindow) return false;
+    
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        switch (event.type) {
+            case SDL_QUIT:
+                m_shouldQuit = true;
+                return false;
+            
+            case SDL_MOUSEMOTION:
+                m_mouseX = event.motion.x;
+                m_mouseY = event.motion.y;
+                if (m_eventCallback) {
+                    GFXInputEvent inputEvent;
+                    inputEvent.type = GFXEventType::MOUSE_MOVE;
+                    inputEvent.x = m_mouseX;
+                    inputEvent.y = m_mouseY;
+                    inputEvent.button = 0;
+                    m_eventCallback(inputEvent);
+                }
+                break;
+            
+            case SDL_MOUSEBUTTONDOWN:
+                if (m_eventCallback) {
+                    GFXInputEvent inputEvent;
+                    inputEvent.type = GFXEventType::MOUSE_BUTTON_DOWN;
+                    inputEvent.x = event.button.x;
+                    inputEvent.y = event.button.y;
+                    inputEvent.button = event.button.button - 1;  // Convert SDL (1,2,3) to (0,1,2)
+                    m_eventCallback(inputEvent);
+                }
+                break;
+            
+            case SDL_MOUSEBUTTONUP:
+                if (m_eventCallback) {
+                    GFXInputEvent inputEvent;
+                    inputEvent.type = GFXEventType::MOUSE_BUTTON_UP;
+                    inputEvent.x = event.button.x;
+                    inputEvent.y = event.button.y;
+                    inputEvent.button = event.button.button - 1;  // Convert SDL (1,2,3) to (0,1,2)
+                    m_eventCallback(inputEvent);
+                }
+                break;
+            
+            case SDL_KEYDOWN:
+            case SDL_KEYUP:
+                // Key events can be extended here if needed
+                break;
+            
+            default:
+                break;
+        }
+    }
+    
+    return !m_shouldQuit;
+}
+
+void LinuxGFX::setEventCallback(const GFXEventCallback& callback) {
+    m_eventCallback = callback;
+}
+
+void LinuxGFX::getMousePosition(int16_t& x, int16_t& y) const {
+    x = m_mouseX;
+    y = m_mouseY;
+}
+
+#endif  // GFXSDL
+
 // =============================================================================
 //  GFXcanvas implementation
 // =============================================================================

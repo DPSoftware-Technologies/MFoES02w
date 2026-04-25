@@ -2,10 +2,8 @@
 #define APP_H
 
 #include <GFX.h>
-#include "hwinterface/i2c_dev.h"
-#include "hwinterface/usbd_client.h"
 #include "hwinterface/gt911.h"
-#include "hwinterface/pwm.h"
+
 #include <pthread.h>
 #include <stdint.h>
 #include <string.h>
@@ -15,6 +13,12 @@
 #include <unistd.h>
 
 #define APP_FPS 60
+
+#ifndef DESKTOP
+#include "hwinterface/i2c_dev.h"
+#include "hwinterface/usbd_client.h"
+#include "hwinterface/pwm.h"
+
 
 #define SCREEN_W     1280
 #define SCREEN_H     720
@@ -39,7 +43,11 @@
 #define DTS_TILE_H   (SCREEN_H / DTS_TILES_Y)   // 80px
 #define DTS_TILE_SIZE (DTS_TILE_W * DTS_TILE_H * 2)  // 12,800 bytes
 
+#endif
+
 #pragma pack(push, 1)
+
+#ifndef DESKTOP
 struct FrameTiledHeader {
     uint8_t  type;      // MSG_FRAME_TILED
     uint8_t  tiles_x;
@@ -61,6 +69,8 @@ struct TileUpdateHeader {
     uint8_t  tx, ty;
     uint16_t tw, th;
 };  // 7 bytes
+
+#endif
 
 struct CValue { // Custom Value
     uint8_t  type;
@@ -88,20 +98,28 @@ class App {
     private:
         // Hardware init
         LinuxGFX   gfx;
+#ifndef DESKTOP
         I2CBus     i2c;
         UsbdClient usbdc;
         GT911 touch;
         PWM buz;
-
-        // touch
-        std::queue<TouchEventData> touchQueue;
-        std::mutex touchQueueMutex;
 
         // USB
         pthread_t usb_thread;
         static void* usbThreadFunc(void* arg);
         void usbLoop();
         void initSysUI();
+
+        // DTS
+        bool hasFrame = false;
+        uint16_t frameBufA[FRAME_PIXELS];  // USB thread writes
+        uint16_t frameBufB[FRAME_PIXELS];  // render thread reads
+        bool frameReady;
+        pthread_mutex_t frameMutex;
+#endif
+        // touch
+        std::queue<TouchEventData> touchQueue;
+        std::mutex touchQueueMutex;
 
         // system msg
         char statusMsg[128];
@@ -111,13 +129,6 @@ class App {
         std::function<void()> _pendingAction; 
         std::queue<std::function<void()>> _actionQueue;
         std::mutex _actionQueueMutex;
-
-        // DTS
-        bool hasFrame = false;
-        uint16_t frameBufA[FRAME_PIXELS];  // USB thread writes
-        uint16_t frameBufB[FRAME_PIXELS];  // render thread reads
-        bool frameReady;
-        pthread_mutex_t frameMutex;
 
         // app
         int sw = gfx.width();

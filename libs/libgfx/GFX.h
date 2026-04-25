@@ -4,6 +4,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+
+#ifdef GFXSDL
+#include <SDL2/SDL.h>
+#endif
 
 // ===== COLOR FORMAT: ARGB8888 ================================================
 //
@@ -98,7 +103,11 @@ public:
      * @param fbdev  Framebuffer device node (e.g. "/dev/fb0").
      *               The framebuffer must be at 32 bpp.
      */
+#ifndef GFXSDL
     explicit LinuxGFX(const char *fbdev = "/dev/fb0");
+#else
+    explicit LinuxGFX(const char *title = "GFX Window", uint16_t width = 1024, uint16_t height = 768);
+#endif
 
     virtual ~LinuxGFX();
 
@@ -210,6 +219,29 @@ public:
 
     void swapBuffers(bool autoclear = true);
 
+#ifdef GFXSDL
+    // ===== SDL EVENT HANDLING ================================================
+
+    /**
+     * Process SDL events. Call this regularly in your main loop.
+     * @return false if quit event received, true otherwise.
+     */
+    bool processEvents();
+
+    /**
+     * Register an event callback to receive input events.
+     * @param callback Function to call on input events.
+     */
+    void setEventCallback(const GFXEventCallback& callback);
+
+    /**
+     * Get the current mouse position.
+     * @param x Output: current X coordinate
+     * @param y Output: current Y coordinate
+     */
+    void getMousePosition(int16_t& x, int16_t& y) const;
+#endif
+
     // ===== MULTI-BUFFER API (Framebuffer back-end only) ======================
 
     bool      enableMultiBuffer    (uint8_t numBuffers = 2);
@@ -255,6 +287,7 @@ protected:
     virtual void drawFastVLineInternal(int16_t x, int16_t y, int16_t h, uint32_t color);
     virtual void drawFastHLineInternal(int16_t x, int16_t y, int16_t w, uint32_t color);
 
+#ifndef GFXSDL
     int       m_fbFd;
     uint8_t  *m_pFbMem;
     size_t    m_fbMemSize;
@@ -271,6 +304,18 @@ protected:
     void _initializeMultiBuffer();
     void _cleanupMultiBuffer();
     void _flushToFb();
+#else
+    SDL_Window   *m_pWindow;
+    SDL_Renderer *m_pRenderer;
+    SDL_Texture  *m_pTexture;
+    uint32_t     *m_pSurfaceBuffer;    ///< SDL surface pixel buffer (ARGB8888)
+    
+    GFXEventCallback m_eventCallback;
+    int16_t          m_mouseX, m_mouseY;
+    bool             m_shouldQuit;
+    
+    void _flushToFb();
+#endif
 
     // ===== Common members ====================================================
     int16_t  m_width, m_height;
@@ -288,6 +333,24 @@ protected:
 
 // Backwards-compat alias
 typedef LinuxGFX CircleGFX;
+
+// ===== EVENT SYSTEM ==========================================================
+
+enum class GFXEventType : uint8_t {
+    MOUSE_MOVE = 0,
+    MOUSE_BUTTON_DOWN = 1,
+    MOUSE_BUTTON_UP = 2,
+};
+
+struct GFXInputEvent {
+    GFXEventType type;
+    int16_t x;      ///< Mouse X position or input resolution width
+    int16_t y;      ///< Mouse Y position or input resolution height
+    uint8_t button; ///< SDL button (0=left, 1=middle, 2=right)
+};
+
+/// Callback type for input events: void callback(const GFXInputEvent& event)
+using GFXEventCallback = std::function<void(const GFXInputEvent&)>;
 
 // =============================================================================
 // GFXcanvas — Virtual off-screen framebuffer

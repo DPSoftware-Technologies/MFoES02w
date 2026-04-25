@@ -20,6 +20,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 option(STATIC_LINK    "Link statically (required for Alpine musl)" ON)
 option(ENABLE_TESTS   "Build unit tests"                           OFF)
 option(ENABLE_LOGGING "Enable debug logging"                       OFF)
+option(DESKTOP_BUILD  "Build for desktop with SDL graphics"       OFF)
 
 #  Static linking for musl 
 if(STATIC_LINK)
@@ -50,6 +51,11 @@ endif()
 
 if(ENABLE_LOGGING)
     add_compile_definitions(ENABLE_LOGGING)
+endif()
+
+if(DESKTOP_BUILD)
+    add_compile_definitions(DESKTOP GFXSDL)
+    message(STATUS "Desktop build ENABLED with SDL graphics")
 endif()
 
 
@@ -137,5 +143,6 @@ message(STATUS "  Build type    : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Static link   : ${STATIC_LINK}")
 message(STATUS "  Tests         : ${ENABLE_TESTS}")
 message(STATUS "  Logging       : ${ENABLE_LOGGING}")
+message(STATUS "  Desktop build : ${DESKTOP_BUILD}")
 message(STATUS "======================================")
 message(STATUS "")
