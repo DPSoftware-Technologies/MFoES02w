@@ -145,7 +145,7 @@ void App::init() {
 }
 
 void App::inputHandle() {
-#ifndef DESKTOP 
+#ifdef DESKTOP 
     gfx.processEvents();
 #endif
     std::lock_guard<std::mutex> lock(touchQueueMutex);

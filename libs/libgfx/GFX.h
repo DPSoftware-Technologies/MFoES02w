@@ -305,7 +305,7 @@ protected:
     virtual void drawFastVLineInternal(int16_t x, int16_t y, int16_t h, uint32_t color);
     virtual void drawFastHLineInternal(int16_t x, int16_t y, int16_t w, uint32_t color);
 
-#ifndef GFXSDL
+    // ===== Framebuffer / multi-buffer members (always present) ================
     int       m_fbFd;
     uint8_t  *m_pFbMem;
     size_t    m_fbMemSize;
@@ -320,17 +320,17 @@ protected:
     void _initializeMultiBuffer();
     void _cleanupMultiBuffer();
     void _flushToFb();
-#else
+
+#ifdef GFXSDL
+    // ===== SDL-only members ==================================================
     SDL_Window   *m_pWindow;
     SDL_Renderer *m_pRenderer;
     SDL_Texture  *m_pTexture;
     uint32_t     *m_pSurfaceBuffer;    ///< SDL surface pixel buffer (ARGB8888)
-    
+
     GFXEventCallback m_eventCallback;
     int16_t          m_mouseX, m_mouseY;
     bool             m_shouldQuit;
-    
-    void _flushToFb();
 #endif
 
     // ===== Common members ====================================================
