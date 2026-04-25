@@ -25,7 +25,6 @@ void App::render(bool forceRender) {
         needRender = true;
     }
 #endif
-
     // user zone
     if (show_data_in) {
         renderDataInInfo();
