@@ -4,8 +4,9 @@
 #include <pthread.h>
 
 App::App()
+    :
 #ifndef DESKTOP
-    :   i2c("/dev/i2c-1"),
+        i2c("/dev/i2c-1"),
         touch(i2c, 17, 27),  // int_pin=17, rst_pin=27
         buz(0, 0),
         frameReady(false),
@@ -14,12 +15,14 @@ App::App()
 {
 #ifndef DESKTOP
     new (gfx_buffer) LinuxGFX("/dev/fb0");
-    pthread_mutex_init(&frameMutex, nullptr);
+
     memset(frameBufA, 0, sizeof(frameBufA));
     memset(frameBufB, 0, sizeof(frameBufB));
 #else
     new (gfx_buffer) LinuxGFX("MFoES02w Demo", 1280, 720);
 #endif
+
+    pthread_mutex_init(&frameMutex, nullptr);
 }
 
 App::~App() {
