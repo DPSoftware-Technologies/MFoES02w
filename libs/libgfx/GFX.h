@@ -69,6 +69,24 @@ typedef struct {
     uint8_t   yAdvance;
 } GFXfont;
 
+// ===== EVENT SYSTEM (forward declaration - full definition after LinuxGFX) ===
+
+enum class GFXEventType : uint8_t {
+    MOUSE_MOVE = 0,
+    MOUSE_BUTTON_DOWN = 1,
+    MOUSE_BUTTON_UP = 2,
+};
+
+struct GFXInputEvent {
+    GFXEventType type;
+    int16_t x;      ///< Mouse X position or input resolution width
+    int16_t y;      ///< Mouse Y position or input resolution height
+    uint8_t button; ///< SDL button (0=left, 1=middle, 2=right)
+};
+
+/// Callback type for input events: void callback(const GFXInputEvent& event)
+using GFXEventCallback = std::function<void(const GFXInputEvent&)>;
+
 // ===== MULTI-BUFFER SUPPORT (Framebuffer back-end only) ======================
 
 enum BufferIndex { BUFFER_0 = 0, BUFFER_1 = 1, BUFFER_2 = 2 };
@@ -291,9 +309,7 @@ protected:
     int       m_fbFd;
     uint8_t  *m_pFbMem;
     size_t    m_fbMemSize;
-    uint32_t  m_pitch;          ///< bytes per line
     uint32_t  m_depth;          ///< bits per pixel (must be 32)
-    uint32_t *m_pBuffer;        ///< current draw buffer (ARGB8888)
 
     FrameBuffer m_buffers[3];
     uint8_t     m_bufferCount;
@@ -318,6 +334,8 @@ protected:
 #endif
 
     // ===== Common members ====================================================
+    uint32_t  m_pitch;          ///< bytes per line
+    uint32_t *m_pBuffer;        ///< current draw buffer (ARGB8888)
     int16_t  m_width, m_height;
     int16_t  m_cursorX, m_cursorY;
     uint32_t m_textColor, m_textBgColor;
@@ -333,24 +351,6 @@ protected:
 
 // Backwards-compat alias
 typedef LinuxGFX CircleGFX;
-
-// ===== EVENT SYSTEM ==========================================================
-
-enum class GFXEventType : uint8_t {
-    MOUSE_MOVE = 0,
-    MOUSE_BUTTON_DOWN = 1,
-    MOUSE_BUTTON_UP = 2,
-};
-
-struct GFXInputEvent {
-    GFXEventType type;
-    int16_t x;      ///< Mouse X position or input resolution width
-    int16_t y;      ///< Mouse Y position or input resolution height
-    uint8_t button; ///< SDL button (0=left, 1=middle, 2=right)
-};
-
-/// Callback type for input events: void callback(const GFXInputEvent& event)
-using GFXEventCallback = std::function<void(const GFXInputEvent&)>;
 
 // =============================================================================
 // GFXcanvas — Virtual off-screen framebuffer
