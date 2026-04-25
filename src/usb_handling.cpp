@@ -1,5 +1,7 @@
 #include "app.h"
 
+#ifndef DESKTOP
+
 void* App::usbThreadFunc(void* arg) {
     static_cast<App*>(arg)->usbLoop();
     return nullptr;
@@ -117,3 +119,5 @@ void App::usbLoop() {
 
     delete[] buf;
 }
+
+#endif
