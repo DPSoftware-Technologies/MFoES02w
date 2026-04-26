@@ -28,7 +28,10 @@
 #ifdef GFXSDL
 
 LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
-    : m_pWindow(nullptr), m_pRenderer(nullptr), m_pTexture(nullptr),
+    : m_fbFd(-1), m_pFbMem(nullptr), m_fbMemSize(0),
+      m_bufferCount(1), m_drawBufferIndex(0), m_displayBufferIndex(0),
+      m_multiBufferEnabled(false),
+      m_pWindow(nullptr), m_pRenderer(nullptr), m_pTexture(nullptr),
       m_pSurfaceBuffer(nullptr), m_mouseX(0), m_mouseY(0), m_shouldQuit(false),
       m_pBuffer(nullptr),
       m_width(width), m_height(height),
@@ -92,6 +95,7 @@ LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
     }
 
     m_pBuffer = m_pSurfaceBuffer;
+    _initializeMultiBuffer();
     fprintf(stderr, "GFX: SDL window %s OK (%dx%d @ 32bpp ARGB8888)\n", title, width, height);
 }
 
@@ -212,9 +216,11 @@ void LinuxGFX::drawRGBBitmap(int16_t x, int16_t y, uint32_t *bitmap, int16_t w, 
 
 void LinuxGFX::_flushToFb() {
 #ifdef GFXSDL
-    if (!m_pTexture || !m_pSurfaceBuffer) return;
+    // Use the correct buffer depending on whether multi-buffer is enabled
+    uint32_t* buffer_to_use = m_multiBufferEnabled ? m_buffers[m_displayBufferIndex].pData : m_pSurfaceBuffer;
+    if (!m_pTexture || !buffer_to_use) return;
     
-    SDL_UpdateTexture(m_pTexture, nullptr, m_pSurfaceBuffer, m_width * sizeof(uint32_t));
+    SDL_UpdateTexture(m_pTexture, nullptr, buffer_to_use, m_width * sizeof(uint32_t));
     SDL_RenderClear(m_pRenderer);
     SDL_RenderCopy(m_pRenderer, m_pTexture, nullptr, nullptr);
     SDL_RenderPresent(m_pRenderer);
@@ -282,9 +288,15 @@ void LinuxGFX::swapBuffers(bool autoclear) {
     if (!m_multiBufferEnabled) { _flushToFb(); return; }
     m_buffers[m_drawBufferIndex].bReady = true;
     m_displayBufferIndex = m_drawBufferIndex;
+#ifdef GFXSDL
+    // In SDL mode, always call _flushToFb to update the texture
+    _flushToFb();
+#else
+    // In framebuffer mode, copy to the framebuffer memory
     if (m_pFbMem)
         memcpy(m_pFbMem, m_buffers[m_displayBufferIndex].pData,
                (size_t)m_width * (size_t)m_height * 4);
+#endif
     m_drawBufferIndex = (m_drawBufferIndex + 1) % m_bufferCount;
     if (autoclear)
         memset(m_buffers[m_drawBufferIndex].pData, 0,
