@@ -40,7 +40,8 @@ LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
       m_textSizeX(1), m_textSizeY(1),
       m_textWrap(true), m_rotation(0),
       m_inverted(false), m_inTransaction(false),
-      m_pFont(nullptr), m_fontSizeMultiplied(true)
+      m_pFont(nullptr), m_fontSizeMultiplied(true),
+      m_eventCallback(nullptr)
 {
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         fprintf(stderr, "GFX: SDL_Init failed: %s\n", SDL_GetError());
@@ -112,7 +113,8 @@ LinuxGFX::LinuxGFX(const char *fbdev)
       m_textSizeX(1), m_textSizeY(1),
       m_textWrap(true), m_rotation(0),
       m_inverted(false), m_inTransaction(false),
-      m_pFont(nullptr), m_fontSizeMultiplied(true)
+      m_pFont(nullptr), m_fontSizeMultiplied(true),
+      m_eventCallback(nullptr)
 {
     const char *dev = fbdev ? fbdev : "/dev/fb0";
     m_fbFd = open(dev, O_RDWR);
@@ -217,10 +219,12 @@ void LinuxGFX::drawRGBBitmap(int16_t x, int16_t y, uint32_t *bitmap, int16_t w, 
 void LinuxGFX::_flushToFb() {
 #ifdef GFXSDL
     // In SDL mode, always render from m_pSurfaceBuffer (multi-buffer is disabled in GFXSDL)
-    if (!m_pTexture || !m_pSurfaceBuffer) return;
+    if (!m_pTexture || !m_pSurfaceBuffer || !m_pRenderer) return;
     
-    SDL_UpdateTexture(m_pTexture, nullptr, m_pSurfaceBuffer, m_width * sizeof(uint32_t));
+    // Proper SDL rendering order: clear -> update texture -> copy -> present
+    SDL_SetRenderDrawColor(m_pRenderer, 0, 0, 0, 255);  // Black background
     SDL_RenderClear(m_pRenderer);
+    SDL_UpdateTexture(m_pTexture, nullptr, m_pSurfaceBuffer, m_width * sizeof(uint32_t));
     SDL_RenderCopy(m_pRenderer, m_pTexture, nullptr, nullptr);
     SDL_RenderPresent(m_pRenderer);
 #else
@@ -302,18 +306,22 @@ void LinuxGFX::swapBuffers(bool autoclear) {
     if (!m_multiBufferEnabled) { _flushToFb(); return; }
     
     // Multi-buffer is only enabled in framebuffer (non-SDL) mode
+    // Safety checks to prevent crashes
+    if (m_drawBufferIndex >= m_bufferCount || !m_buffers[m_drawBufferIndex].pData) return;
+    
     m_buffers[m_drawBufferIndex].bReady = true;
     m_displayBufferIndex = m_drawBufferIndex;
     
-    if (m_pFbMem)
+    if (m_pFbMem && m_buffers[m_displayBufferIndex].pData)
         memcpy(m_pFbMem, m_buffers[m_displayBufferIndex].pData,
                (size_t)m_width * (size_t)m_height * 4);
     
     m_drawBufferIndex = (m_drawBufferIndex + 1) % m_bufferCount;
-    if (autoclear)
+    if (autoclear && m_buffers[m_drawBufferIndex].pData)
         memset(m_buffers[m_drawBufferIndex].pData, 0,
                (size_t)m_width * (size_t)m_height * 4);
-    m_pBuffer = m_buffers[m_drawBufferIndex].pData;
+    if (m_buffers[m_drawBufferIndex].pData)
+        m_pBuffer = m_buffers[m_drawBufferIndex].pData;
 }
 
 bool LinuxGFX::selectDrawBuffer(uint8_t idx) {
