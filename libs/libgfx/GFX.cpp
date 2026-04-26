@@ -216,18 +216,23 @@ void LinuxGFX::drawRGBBitmap(int16_t x, int16_t y, uint32_t *bitmap, int16_t w, 
 
 void LinuxGFX::_flushToFb() {
 #ifdef GFXSDL
-    // Use the correct buffer depending on whether multi-buffer is enabled
-    uint32_t* buffer_to_use = m_multiBufferEnabled ? m_buffers[m_displayBufferIndex].pData : m_pSurfaceBuffer;
-    if (!m_pTexture || !buffer_to_use) return;
+    // In SDL mode, always render from m_pSurfaceBuffer (multi-buffer is disabled in GFXSDL)
+    if (!m_pTexture || !m_pSurfaceBuffer) return;
     
-    SDL_UpdateTexture(m_pTexture, nullptr, buffer_to_use, m_width * sizeof(uint32_t));
+    SDL_UpdateTexture(m_pTexture, nullptr, m_pSurfaceBuffer, m_width * sizeof(uint32_t));
     SDL_RenderClear(m_pRenderer);
     SDL_RenderCopy(m_pRenderer, m_pTexture, nullptr, nullptr);
     SDL_RenderPresent(m_pRenderer);
 #else
+    // In framebuffer mode, copy from current buffer to framebuffer (or use multi-buffer display buffer)
     if (!m_pFbMem || !m_pBuffer) return;
     if ((uint8_t*)m_pBuffer == m_pFbMem) return;
-    memcpy(m_pFbMem, m_pBuffer, (size_t)m_width * (size_t)m_height * 4);
+    if (m_multiBufferEnabled) {
+        memcpy(m_pFbMem, m_buffers[m_displayBufferIndex].pData,
+               (size_t)m_width * (size_t)m_height * 4);
+    } else {
+        memcpy(m_pFbMem, m_pBuffer, (size_t)m_width * (size_t)m_height * 4);
+    }
 #endif
 }
 
@@ -253,6 +258,12 @@ void LinuxGFX::_cleanupMultiBuffer() {
 }
 
 bool LinuxGFX::enableMultiBuffer(uint8_t numBuffers) {
+#ifdef GFXSDL
+    // SDL already provides buffering - just keep using m_pSurfaceBuffer
+    // Return true to indicate "success" so app code doesn't break
+    return true;
+#else
+    // Framebuffer mode - use true multi-buffer
     if (numBuffers < 1 || numBuffers > 3) numBuffers = 2;
     size_t bufSize = (size_t)m_width * (size_t)m_height * sizeof(uint32_t);
 
@@ -279,6 +290,7 @@ bool LinuxGFX::enableMultiBuffer(uint8_t numBuffers) {
     m_multiBufferEnabled = true;
     m_pBuffer = m_buffers[m_drawBufferIndex].pData;
     return true;
+#endif
 }
 
 bool     LinuxGFX::isMultiBuffered()        const { return m_multiBufferEnabled; }
@@ -288,17 +300,15 @@ uint8_t  LinuxGFX::getDisplayBufferIndex()  const { return m_displayBufferIndex;
 
 void LinuxGFX::swapBuffers(bool autoclear) {
     if (!m_multiBufferEnabled) { _flushToFb(); return; }
+    
+    // Multi-buffer is only enabled in framebuffer (non-SDL) mode
     m_buffers[m_drawBufferIndex].bReady = true;
     m_displayBufferIndex = m_drawBufferIndex;
-#ifdef GFXSDL
-    // In SDL mode, always call _flushToFb to update the texture
-    _flushToFb();
-#else
-    // In framebuffer mode, copy to the framebuffer memory
+    
     if (m_pFbMem)
         memcpy(m_pFbMem, m_buffers[m_displayBufferIndex].pData,
                (size_t)m_width * (size_t)m_height * 4);
-#endif
+    
     m_drawBufferIndex = (m_drawBufferIndex + 1) % m_bufferCount;
     if (autoclear)
         memset(m_buffers[m_drawBufferIndex].pData, 0,
