@@ -113,8 +113,7 @@ LinuxGFX::LinuxGFX(const char *fbdev)
       m_textSizeX(1), m_textSizeY(1),
       m_textWrap(true), m_rotation(0),
       m_inverted(false), m_inTransaction(false),
-      m_pFont(nullptr), m_fontSizeMultiplied(true),
-      m_eventCallback(nullptr)
+      m_pFont(nullptr), m_fontSizeMultiplied(true)
 {
     const char *dev = fbdev ? fbdev : "/dev/fb0";
     m_fbFd = open(dev, O_RDWR);
