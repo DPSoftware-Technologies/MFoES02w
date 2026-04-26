@@ -95,7 +95,7 @@ LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
     }
 
     m_pBuffer = m_pSurfaceBuffer;
-    m_pitch = (uint32_t)width * sizeof(uint32_t);  // <-- ADD THIS
+    m_pitch = (uint32_t)width * sizeof(uint32_t);  
     _initializeMultiBuffer();  // Initialize buffer array to nullptrs (multi-buffer disabled for SDL)
     fprintf(stderr, "GFX: SDL window %s OK (%dx%d @ 32bpp ARGB8888)\n", title, width, height);
 }
@@ -261,11 +261,6 @@ void LinuxGFX::_cleanupMultiBuffer() {
 }
 
 bool LinuxGFX::enableMultiBuffer(uint8_t numBuffers) {
-#ifdef GFXSDL
-    // SDL already provides buffering - just keep using m_pSurfaceBuffer
-    // Return true to indicate "success" so app code doesn't break
-    return true;
-#else
     // Framebuffer mode - use true multi-buffer
     if (numBuffers < 1 || numBuffers > 3) numBuffers = 2;
     size_t bufSize = (size_t)m_width * (size_t)m_height * sizeof(uint32_t);
@@ -293,7 +288,6 @@ bool LinuxGFX::enableMultiBuffer(uint8_t numBuffers) {
     m_multiBufferEnabled = true;
     m_pBuffer = m_buffers[m_drawBufferIndex].pData;
     return true;
-#endif
 }
 
 bool     LinuxGFX::isMultiBuffered()        const { return m_multiBufferEnabled; }
