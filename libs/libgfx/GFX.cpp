@@ -95,7 +95,6 @@ LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
     }
 
     m_pBuffer = m_pSurfaceBuffer;
-    _initializeMultiBuffer();
     fprintf(stderr, "GFX: SDL window %s OK (%dx%d @ 32bpp ARGB8888)\n", title, width, height);
 }
 
