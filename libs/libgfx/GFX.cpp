@@ -262,8 +262,35 @@ void LinuxGFX::_cleanupMultiBuffer() {
 
 bool LinuxGFX::enableMultiBuffer(uint8_t numBuffers) {
 #ifdef GFXSDL
-    // SDL already provides buffering - just keep using m_pSurfaceBuffer
-    // Return true to indicate "success" so app code doesn't break
+    // Allocate a real back buffer so drawing doesn't go directly to m_pSurfaceBuffer
+    size_t bufSize = (size_t)m_width * (size_t)m_height * sizeof(uint32_t);
+    
+    // Free any previous back buffer
+    for (uint8_t i = 0; i < 3; i++) {
+        if (m_buffers[i].bOwned && m_buffers[i].pData) {
+            free(m_buffers[i].pData);
+            m_buffers[i].pData = nullptr;
+            m_buffers[i].bOwned = false;
+        }
+    }
+
+    // Buffer 0 = front (m_pSurfaceBuffer, not owned)
+    m_buffers[0].pData  = m_pSurfaceBuffer;
+    m_buffers[0].bOwned = false;
+    m_buffers[0].bReady = false;
+
+    // Buffer 1 = back (heap allocated)
+    m_buffers[1].pData  = (uint32_t*)calloc(m_width * m_height, sizeof(uint32_t));
+    m_buffers[1].bOwned = true;
+    m_buffers[1].bReady = false;
+
+    if (!m_buffers[1].pData) return false;
+
+    m_bufferCount        = 2;
+    m_displayBufferIndex = 0;
+    m_drawBufferIndex    = 1;
+    m_multiBufferEnabled = true;
+    m_pBuffer            = m_buffers[1].pData;  // draw to back buffer
     return true;
 #else
     // Framebuffer mode - use true multi-buffer
@@ -303,18 +330,25 @@ uint8_t  LinuxGFX::getDisplayBufferIndex()  const { return m_displayBufferIndex;
 
 void LinuxGFX::swapBuffers(bool autoclear) {
     if (!m_multiBufferEnabled) { _flushToFb(); return; }
-    
-    // Multi-buffer is only enabled in framebuffer (non-SDL) mode
-    // Safety checks to prevent crashes
+
     if (m_drawBufferIndex >= m_bufferCount || !m_buffers[m_drawBufferIndex].pData) return;
-    
+
     m_buffers[m_drawBufferIndex].bReady = true;
     m_displayBufferIndex = m_drawBufferIndex;
-    
+
+#ifdef GFXSDL
+    // Copy back buffer -> front (m_pSurfaceBuffer) then present
+    if (m_pSurfaceBuffer && m_buffers[m_displayBufferIndex].pData) {
+        memcpy(m_pSurfaceBuffer, m_buffers[m_displayBufferIndex].pData,
+               (size_t)m_width * (size_t)m_height * 4);
+    }
+    _flushToFb();  // does SDL_UpdateTexture + RenderPresent
+#else
     if (m_pFbMem && m_buffers[m_displayBufferIndex].pData)
         memcpy(m_pFbMem, m_buffers[m_displayBufferIndex].pData,
                (size_t)m_width * (size_t)m_height * 4);
-    
+#endif
+
     m_drawBufferIndex = (m_drawBufferIndex + 1) % m_bufferCount;
     if (autoclear && m_buffers[m_drawBufferIndex].pData)
         memset(m_buffers[m_drawBufferIndex].pData, 0,
