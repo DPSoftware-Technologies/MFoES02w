@@ -40,8 +40,7 @@ LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
       m_textSizeX(1), m_textSizeY(1),
       m_textWrap(true), m_rotation(0),
       m_inverted(false), m_inTransaction(false),
-      m_pFont(nullptr), m_fontSizeMultiplied(true),
-      m_eventCallback(nullptr)
+      m_pFont(nullptr), m_fontSizeMultiplied(true)
 {
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         fprintf(stderr, "GFX: SDL_Init failed: %s\n", SDL_GetError());
@@ -96,6 +95,7 @@ LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
     }
 
     m_pBuffer = m_pSurfaceBuffer;
+    m_pitch = (uint32_t)width * sizeof(uint32_t);  // <-- ADD THIS
     _initializeMultiBuffer();  // Initialize buffer array to nullptrs (multi-buffer disabled for SDL)
     fprintf(stderr, "GFX: SDL window %s OK (%dx%d @ 32bpp ARGB8888)\n", title, width, height);
 }
