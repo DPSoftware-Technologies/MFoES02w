@@ -261,6 +261,11 @@ void LinuxGFX::_cleanupMultiBuffer() {
 }
 
 bool LinuxGFX::enableMultiBuffer(uint8_t numBuffers) {
+#ifdef GFXSDL
+    // SDL already provides buffering - just keep using m_pSurfaceBuffer
+    // Return true to indicate "success" so app code doesn't break
+    return true;
+#else
     // Framebuffer mode - use true multi-buffer
     if (numBuffers < 1 || numBuffers > 3) numBuffers = 2;
     size_t bufSize = (size_t)m_width * (size_t)m_height * sizeof(uint32_t);
@@ -288,6 +293,7 @@ bool LinuxGFX::enableMultiBuffer(uint8_t numBuffers) {
     m_multiBufferEnabled = true;
     m_pBuffer = m_buffers[m_drawBufferIndex].pData;
     return true;
+#endif
 }
 
 bool     LinuxGFX::isMultiBuffered()        const { return m_multiBufferEnabled; }
