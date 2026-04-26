@@ -273,9 +273,11 @@ bool LinuxGFX::enableMultiBuffer(uint8_t numBuffers) {
         m_buffers[i].bOwned = true; m_buffers[i].bReady = false;
         memset(m_buffers[i].pData, 0, bufSize);
     }
-    m_drawBufferIndex = 0; m_displayBufferIndex = 0;
+    // Start with draw and display buffers at different indices to avoid concurrent access
+    m_displayBufferIndex = 0;  // Display shows buffer 0 (cleared)
+    m_drawBufferIndex = (numBuffers > 1) ? 1 : 0;  // Draw to buffer 1 (or 0 if only 1 buffer)
     m_multiBufferEnabled = true;
-    m_pBuffer = m_buffers[0].pData;
+    m_pBuffer = m_buffers[m_drawBufferIndex].pData;
     return true;
 }
 
