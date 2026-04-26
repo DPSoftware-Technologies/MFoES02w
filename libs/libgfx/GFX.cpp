@@ -158,6 +158,9 @@ LinuxGFX::LinuxGFX(const char *fbdev)
 #endif
 
 void LinuxGFX::stop() {
+    // Clean up multi-buffers first (if enabled)
+    _cleanupMultiBuffer();
+
 #ifdef GFXSDL
     if (m_pTexture) SDL_DestroyTexture(m_pTexture);
     if (m_pRenderer) SDL_DestroyRenderer(m_pRenderer);
@@ -165,7 +168,6 @@ void LinuxGFX::stop() {
     if (m_pSurfaceBuffer) free(m_pSurfaceBuffer);
     SDL_Quit();
 #else
-    _cleanupMultiBuffer();
     if (m_pFbMem && m_pFbMem != MAP_FAILED) munmap(m_pFbMem, m_fbMemSize);
     if (m_fbFd >= 0) close(m_fbFd);
 #endif
