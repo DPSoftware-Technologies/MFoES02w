@@ -300,6 +300,12 @@ public:
 
     void handleEvent(const TouchEventData& e);
 
+    //  Update — call every frame with current timestamp (for HOLD_SWIPE and animations)
+    
+    void update(uint32_t nowMs) {
+        for (auto& en : _buttons) en.widget.update(nowMs);
+    }
+
     //  Draw — templated, must remain in header 
 
     template<typename GFX>
