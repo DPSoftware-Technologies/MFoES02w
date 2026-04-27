@@ -44,7 +44,9 @@ ButtonTheme ButtonTheme::HUD() {
 //  ButtonWidget 
 
 ButtonWidget::ButtonWidget()
-    : x(0), y(0), w(0), h(0), mode(ButtonMode::TRIGGER) {}
+    : x(0), y(0), w(0), h(0), mode(ButtonMode::TRIGGER), 
+      _swipeDurationMs(1000), _swipePressedAt(0), _swipeProgress(0.f), 
+      _swipeFired(false) {}
 
 ButtonWidget::ButtonWidget(int x, int y, int w, int h,
                            const std::string& label, ButtonMode mode,
@@ -152,6 +154,7 @@ void ButtonWidget::handleEvent(const TouchEventData& e) {
 void ButtonWidget::update(uint32_t nowMs) {
     if (mode != ButtonMode::HOLD_SWIPE) return;
     if (!pressed || _swipeFired)        return;
+    if (_swipeDurationMs == 0)          return;  // Safety: prevent division by zero
 
     if (_swipePressedAt == 0)
         _swipePressedAt = nowMs;  // latch on first frame after press
