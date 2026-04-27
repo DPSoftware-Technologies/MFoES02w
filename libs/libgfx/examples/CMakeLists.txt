@@ -3,7 +3,8 @@ project(GFX_Examples)
 
 # Use a cleaner path reference
 set(LIBGFX_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../libgfx")
-add_subdirectory(${LIBGFX_DIR} libgfx_build)
+# If libgfx is the parent directory of this examples folder
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/.." libgfx_build)
 
 # Define examples in a list
 set(EXAMPLES 
