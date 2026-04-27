@@ -11,13 +11,14 @@
 #include <cstring>
 #include <cerrno>
 #include <fcntl.h>
+#include <cmath>
+#include <algorithm>
+#include <vector>
+
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <poll.h>
-#include <cmath>
-#include <algorithm>
-#include <vector>
 
 #ifdef GFXSDL
 #include <SDL2/SDL.h>
