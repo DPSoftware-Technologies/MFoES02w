@@ -1,43 +1,28 @@
 cmake_minimum_required(VERSION 3.10)
 project(GFX_Examples)
 
-# Add libgfx subdirectory
-add_subdirectory(../libgfx)
+# Use a cleaner path reference
+set(LIBGFX_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../libgfx")
+add_subdirectory(${LIBGFX_DIR} libgfx_build)
 
-# ============================================================================
-# Simple Example - Basic shapes drawing
-# ============================================================================
-add_executable(example_simple
-    example_simple.cpp
+# Define examples in a list
+set(EXAMPLES 
+    example_simple 
+    example_input 
+    example_paint
 )
-target_link_libraries(example_simple PRIVATE libgfx)
-target_include_directories(example_simple PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../libgfx)
 
+foreach(EXAMPLE ${EXAMPLES})
+    add_executable(${EXAMPLE} ${EXAMPLE}.cpp)
+    
+    target_link_libraries(${EXAMPLE} PRIVATE libgfx)
+    
+    # Only keep this if libgfx doesn't export its own headers
+    target_include_directories(${EXAMPLE} PRIVATE ${LIBGFX_DIR})
+endforeach()
 
-# ============================================================================
-# Input Example - Mouse input tracking
-# ============================================================================
-add_executable(example_input
-    example_input.cpp
-)
-target_link_libraries(example_input PRIVATE libgfx)
-target_include_directories(example_input PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libs/libgfx)
-
-
-# ============================================================================
-# Paint Example - Simple paint program
-# ============================================================================
-add_executable(example_paint
-    example_paint.cpp
-)
-target_link_libraries(example_paint PRIVATE libgfx)
-target_include_directories(example_paint PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libs/libgfx)
-
-
-# ============================================================================
 # Print build info
-# ============================================================================
-message(STATUS "GFX Examples:")
-message(STATUS "  example_simple - Basic shapes drawing")
-message(STATUS "  example_input  - Mouse input tracking")
-message(STATUS "  example_paint  - Simple paint program")
+message(STATUS "GFX Examples configured:")
+foreach(EXAMPLE ${EXAMPLES})
+    message(STATUS "  - ${EXAMPLE}")
+endforeach()
