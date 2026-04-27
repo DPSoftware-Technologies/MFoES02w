@@ -39,9 +39,6 @@ void App::render(bool forceRender) {
 
     // interactive UI zone
     if (!hide_ui && (ui.needsRedraw() || forceRender || needRender || RRFSYSMSG)) {
-        uint32_t nowMs = (uint32_t)(std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count() & 0xFFFFFFFF);
-        ui.update(nowMs);
         ui.draw(gfx); 
         needRender = true;
     }

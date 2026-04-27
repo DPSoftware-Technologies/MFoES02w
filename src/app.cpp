@@ -186,6 +186,10 @@ void App::process() {
         fn();   // runs on main thread — safe to call UI/GFX
     }
 
+    uint32_t nowMs = (uint32_t)(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::high_resolution_clock::now().time_since_epoch()).count() & 0xFFFFFFFF);
+    ui.update(nowMs);
+
     render();
     usleep(fps_us);
 }
