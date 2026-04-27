@@ -31,10 +31,13 @@ void SliderWidget::getThumbRect(int& ox, int& oy, int& ow, int& oh) const {
 
 float SliderWidget::pointToValue(int tx, int ty) const {
     float v;
-    if (orientation == SliderOrientation::HORIZONTAL)
-        v = (float)(tx - x - THUMB_SIZE/2) / (float)(w - THUMB_SIZE);
-    else
-        v = 1.0f - (float)(ty - y - THUMB_SIZE/2) / (float)(h - THUMB_SIZE);
+    if (orientation == SliderOrientation::HORIZONTAL) {
+        int denom = w - THUMB_SIZE;
+        v = (denom > 0) ? (float)(tx - x - THUMB_SIZE/2) / (float)denom : 0.0f;
+    } else {
+        int denom = h - THUMB_SIZE;
+        v = (denom > 0) ? 1.0f - (float)(ty - y - THUMB_SIZE/2) / (float)denom : 0.0f;
+    }
     return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
 }
 
@@ -43,7 +46,8 @@ float SliderWidget::mappedValue() const { return minVal + value * (maxVal - minV
 //  Public interface 
 
 void SliderWidget::setValue(float v) {
-    value = (v - minVal) / (maxVal - minVal);
+    float denom = (maxVal - minVal);
+    value = (denom != 0.0f) ? (v - minVal) / denom : 0.0f;
     value = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
 }
 

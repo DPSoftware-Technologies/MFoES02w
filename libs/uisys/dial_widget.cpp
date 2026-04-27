@@ -24,7 +24,7 @@ float DialWidget::pointToValue(int tx, int ty) const {
     float rel = ang - START_ANGLE;
     if (rel < 0) rel += 360.0f;
     if (rel > SWEEP) rel = (rel - SWEEP < 360.0f - rel) ? SWEEP : 0.0f;
-    return rel / SWEEP;
+    return (SWEEP != 0.0f) ? rel / SWEEP : 0.0f;
 }
 
 bool DialWidget::hitTest(int tx, int ty) const {
@@ -37,7 +37,7 @@ float DialWidget::mappedValue() const { return minVal + value * (maxVal - minVal
 
 //  Public interface 
 
-void  DialWidget::setValue(float v) { value = (v - minVal) / (maxVal - minVal); clampValue(); }
+void  DialWidget::setValue(float v) { float denom = (maxVal - minVal); value = (denom != 0.0f) ? (v - minVal) / denom : 0.0f; clampValue(); }
 float DialWidget::getValue()       const { return mappedValue(); }
 float DialWidget::getNormalized()  const { return value; }
 

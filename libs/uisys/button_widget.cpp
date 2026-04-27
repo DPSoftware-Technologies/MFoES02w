@@ -44,8 +44,8 @@ ButtonTheme ButtonTheme::HUD() {
 //  ButtonWidget 
 
 ButtonWidget::ButtonWidget()
-    : x(0), y(0), w(0), h(0), mode(ButtonMode::TRIGGER), 
-      _swipeDurationMs(1000), _swipePressedAt(0), _swipeProgress(0.f), 
+    : x(0), y(0), w(0), h(0), mode(ButtonMode::TRIGGER),
+      _swipeDurationMs(1000), _swipePressedAt(0), _swipeProgress(0.f),
       _swipeFired(false) {}
 
 ButtonWidget::ButtonWidget(int x, int y, int w, int h,
