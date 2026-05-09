@@ -117,14 +117,23 @@ typedef struct {
 class LinuxGFX {
 public:
     /**
-     * Framebuffer back-end constructor.
+     * DRM/KMS back-end constructor (raw kernel ioctls, no Mesa/libdrm).
+     * Opens the DRM card, enumerates connectors, creates two dumb buffers for
+     * double-buffering, and page-flips on every swapBuffers() call.
+     * Default device is /dev/dri/card0.
+     * Build with -DGFX_USE_DRM (via CMake option GFX_DRM_SUPPORT=ON).
+     */
+#if defined(GFX_USE_DRM)
+    explicit LinuxGFX(const char *drmdev = "/dev/dri/card0");
+#elif defined(GFXSDL)
+    explicit LinuxGFX(const char *title = "GFX Window", uint16_t width = 1024, uint16_t height = 768);
+#else
+    /**
+     * Framebuffer back-end constructor (default).
      * @param fbdev  Framebuffer device node (e.g. "/dev/fb0").
      *               The framebuffer must be at 32 bpp.
      */
-#ifndef GFXSDL
     explicit LinuxGFX(const char *fbdev = "/dev/fb0");
-#else
-    explicit LinuxGFX(const char *title = "GFX Window", uint16_t width = 1024, uint16_t height = 768);
 #endif
 
     virtual ~LinuxGFX();
@@ -210,6 +219,18 @@ public:
     void writeText (const char *text);
     void setFont (const GFXfont *f = nullptr);
     void writeTextF(const char* fmt, ...);
+    void setTextRotation(uint8_t rotation);  ///< Set text rotation in degrees (0, 90, 180, 270)
+    uint8_t getTextRotation() const;         ///< Get current text rotation
+    void setText(int16_t x, int16_t y, const char *text, 
+                 uint32_t color = GFX_WHITE, uint32_t bgColor = GFX_TRANSPARENT, 
+                 uint8_t sizeX = 1, uint8_t sizeY = 1, const GFXfont *font = nullptr,
+                 uint8_t rotation = 0);
+
+    // ===== PRINT API (convenience methods) ====================================
+    
+    void print   (const char *text);      ///< Write text, cursor stays on same line
+    void println (const char *text);      ///< Write text, cursor advances to next line
+    void println ();                      ///< Advance cursor to next line
 
     // ===== CONTROL API =======================================================
 
@@ -288,6 +309,9 @@ protected:
     virtual void     setPixel (int16_t x, int16_t y, uint32_t color);
     virtual uint32_t getPixel (int16_t x, int16_t y) const;
 
+    /// Helper function for writing rotated text
+    void writeTextRotated(const char *text, int16_t originX, int16_t originY);
+
     /// Alpha-blend src over dst.  Both ARGB8888.  Returns blended ARGB8888.
     static inline uint32_t blendARGB(uint32_t src, uint32_t dst) {
         uint32_t sa = (src >> 24) & 0xFF;
@@ -323,6 +347,25 @@ protected:
     void _cleanupMultiBuffer();
     void _flushToFb();
 
+#ifdef GFX_USE_DRM
+    void _drmWaitFlip();
+
+    struct _DrmBuf {
+        uint32_t handle;   ///< dumb buffer kernel handle
+        uint32_t fb_id;    ///< DRM framebuffer object id
+        uint8_t *map;      ///< mmap'd pointer into the dumb buffer
+        uint32_t size;     ///< total byte size (height * pitch)
+        uint32_t pitch;    ///< bytes per row (hardware-aligned)
+    };
+
+    int      m_drmFd;
+    uint32_t m_drmCrtcId;
+    uint32_t m_drmConnId;
+    _DrmBuf  m_drmBufs[2];
+    uint8_t  m_drmFront;        ///< index (0 or 1) of the buffer currently on-screen
+    bool     m_drmFlipPending;
+#endif
+
 #ifdef GFXSDL
     // ===== SDL-only members ==================================================
     SDL_Window   *m_pWindow;
@@ -342,6 +385,7 @@ protected:
     int16_t  m_cursorX, m_cursorY;
     uint32_t m_textColor, m_textBgColor;
     uint8_t  m_textSizeX, m_textSizeY;
+    uint8_t  m_textRotation;    ///< text rotation in degrees (0, 90, 180, 270)
     bool     m_textWrap;
     uint8_t  m_rotation;
     bool     m_inverted;

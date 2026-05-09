@@ -36,9 +36,20 @@ void App::render(bool forceRender) {
         renderAbout(); 
         needRender = true;
     }
-
+    
     // interactive UI zone
-    if (!hide_ui && (ui.needsRedraw() || forceRender || needRender || RRFSYSMSG)) {
+    if (ui.getButton("ssui")->isToggleOn() && (RRFSYSINFO || ui.needsRedraw() || needRender || forceRender)) {
+        renderInfo();
+        // Only request redraw if system info flag was set (content changed), not every frame
+        if (RRFSYSINFO) {
+            ui.requestRedraw();
+        }
+
+        RRFSYSINFO = false;
+        needRender = true;
+    }
+    
+    if (!hide_ui && (RRFSYSMSG || ui.needsRedraw() || needRender || forceRender)) {
         ui.draw(gfx); 
         needRender = true;
     }
@@ -65,7 +76,7 @@ void App::render(bool forceRender) {
 }
 
 void App::initSysUI() {
-    ui.addButton("quit", 50, 50, 180, 60, "Exit MFD", uisys::ButtonMode::TRIGGER,
+    ui.addButton("quit", 20, 20, 180, 60, "Exit MFD", uisys::ButtonMode::TRIGGER,
         [this](int s){
             defer([this]{
                 int r = ui.quickFireDialog(SCREEN_W, SCREEN_H,
@@ -83,7 +94,7 @@ void App::initSysUI() {
         },
         uisys::ButtonTheme::Danger());
 
-    ui.addButton("halt", 250, 50, 180, 60, "Shutdown", uisys::ButtonMode::TRIGGER,
+    ui.addButton("halt", 210, 20, 180, 60, "Shutdown", uisys::ButtonMode::TRIGGER,
         [this](int s){
             defer([this]{
                 int r = ui.quickFireDialog(SCREEN_W, SCREEN_H,
@@ -108,7 +119,7 @@ void App::initSysUI() {
         },
         uisys::ButtonTheme::Danger());
 
-    ui.addButton("hideui", 450, 50, 180, 60, "Hide All UI", uisys::ButtonMode::TRIGGER,
+    ui.addButton("hideui", 400, 20, 180, 60, "Hide All UI", uisys::ButtonMode::TRIGGER,
         [this](int s){
             defer([this]{
                 int r = ui.quickFireDialog(SCREEN_W, SCREEN_H,
@@ -127,7 +138,7 @@ void App::initSysUI() {
         },
         uisys::ButtonTheme::Danger());
     
-    ui.addButton("restart", 650, 50, 180, 60, "Restart", uisys::ButtonMode::TRIGGER,
+    ui.addButton("restart", 590, 20, 180, 60, "Restart", uisys::ButtonMode::TRIGGER,
         [this](int s){
             defer([this]{
                 int r = ui.quickFireDialog(SCREEN_W, SCREEN_H,
@@ -236,61 +247,48 @@ void App::initDemoUI() {
     ui.getSpinBox("gain2")->setVisible(false);
 }
 
+void App::setView(std::string view) {
+    // 1. Reset everything to a clean slate
+    show_data_in = (view == "data");
+    show_about = (view == "info");
+
+    ui.getButton("sdata")->setToggleState(view == "data");
+    ui.getButton("sinfo")->setToggleState(view == "info");
+    ui.getButton("ssui")->setToggleState(view == "system");
+    ui.getButton("sdui")->setToggleState(view == "demo");
+
+    // 2. Group visibility
+    bool isSys = (view == "system");
+    ui.getButton("quit")->setVisible(isSys);
+    ui.getButton("halt")->setVisible(isSys);
+    ui.getButton("hideui")->setVisible(isSys);
+    ui.getButton("restart")->setVisible(isSys);
+
+    bool isDemo = (view == "demo");
+    std::vector<std::string> demoElements = {"fire", "boost", "gain", "freq", "ip", "port", "name", "arm", "vol", "testbtn1"};
+    for (const auto& id : demoElements) {
+        isDemo ? ui.show(id) : ui.hide(id);
+    }
+    
+    ui.getComboBox("mode")->setVisible(isDemo);
+    ui.getSpinBox("speed")->setVisible(isDemo);
+    ui.getSpinBox("gain2")->setVisible(isDemo);
+}
+
 void App::initSidebarBTNs() {
+    auto theme = uisys::ButtonTheme::Military();
+
     ui.addButton("sdata", 1075, 360, 180, 50, "Show Data", uisys::ButtonMode::TOGGLE,
-        [this](int s){
-            show_data_in = (s == 1) ? true : false;
-        },
-        uisys::ButtonTheme::Military());
+        [this](int s){ if(s) setView("data"); }, theme);
 
     ui.addButton("sinfo", 1075, 440, 180, 50, "Show Info", uisys::ButtonMode::TOGGLE,
-        [this](int s){
-            show_about = (s == 1) ? true : false;
-        },
-        uisys::ButtonTheme::Military());
+        [this](int s){ if(s) setView("info"); }, theme);
 
     ui.addButton("ssui", 1075, 520, 180, 50, "Show System UI", uisys::ButtonMode::TOGGLE,
-        [this](int s){
-            bool state = (s == 1) ? true : false;
-
-            ui.getButton("quit")->setVisible(state);
-            ui.getButton("halt")->setVisible(state);
-            ui.getButton("hideui")->setVisible(state);
-            ui.getButton("restart")->setVisible(state);
-        },
-        uisys::ButtonTheme::Military());
+        [this](int s){ if(s) setView("system"); else setView("none"); }, theme);
 
     ui.addButton("sdui", 1075, 600, 180, 50, "Show Demo UI", uisys::ButtonMode::TOGGLE,
-        [this](int s){
-            bool state = (s == 1) ? true : false;
-            ui.getComboBox("mode")->setVisible(state);
-            ui.getSpinBox("speed")->setVisible(state);
-            ui.getSpinBox("gain2")->setVisible(state);
-            if (!state) {
-                ui.hide("fire");
-                ui.hide("boost");
-                ui.hide("gain");
-                ui.hide("freq");
-                ui.hide("ip");
-                ui.hide("port");
-                ui.hide("name");
-                ui.hide("arm");
-                ui.hide("vol");
-                ui.hide("testbtn1");
-            } else {
-                ui.show("fire");
-                ui.show("boost");
-                ui.show("gain");
-                ui.show("freq");
-                ui.show("ip");
-                ui.show("port");
-                ui.show("name");
-                ui.show("arm");
-                ui.show("vol");
-                ui.show("testbtn1");
-            }
-        },
-        uisys::ButtonTheme::Military());
+        [this](int s){ if(s) setView("demo"); else setView("none"); }, theme);
 }
 
 void App::renderAbout() {
@@ -303,30 +301,13 @@ void App::renderAbout() {
     gfx.writeText("a Mounted Family of Embedded System");
     gfx.setCursor(20, sh-50);
     gfx.setTextSize(2);
-    gfx.writeText("by DPSoftware Technologies (PlatoonLabs)");
+    gfx.writeText("DPSoftware Technologies (PlatoonLabs)");
 
     gfx.setCursor(720, sh-135);
     gfx.setTextSize(2);
     gfx.writeText("Adafruit GFX Compatible");
     gfx.drawBitmap(795, sh-100, adaf_logo_bmp, 115, 32, 0xFFFFFFFFu);
 }
-
-void App::drawGauge(int x, int y, int r, float value, float minVal, float maxVal) {
-    float angleDegrees = (value - minVal) * (180.0 - 0.0) / (maxVal - minVal);
-    
-    angleDegrees = 180.0 - angleDegrees; 
-
-    float angleRad = angleDegrees * (3.14159265 / 180.0);
-
-    // Use drawCircle instead of the protected drawCircleHelper
-    gfx.drawCircle(x, y, r, GFX_WHITE);
-
-    int xEnd = x + cos(angleRad) * (r - 5);
-    int yEnd = y - sin(angleRad) * (r - 5);
-
-    gfx.drawLine(x, y, xEnd, yEnd, GFX_WHITE);
-}
-
 
 void App::renderDataInInfo() {
     gfx.setTextColor(0xFFFFFFFF);
@@ -336,6 +317,22 @@ void App::renderDataInInfo() {
         gfx.setCursor(20, 50 + (i * 15));
         gfx.writeTextF("CV%d: %u", i + 1, cvdata.v[i]);
     }
+}
 
-    drawGauge(50, 200, 10, cvdata.v[0], 0, 100);
+void App::renderInfo() {
+    std::vector<float> coreUsages = linfo.getAllCoreUsages();
+    float coreLoadAVG = linfo.getCPUUsage();
+    float cpuTemp = linfo.getCPUTemp();
+    float cpuClock = linfo.getCPUClock();
+    long ramTotal = linfo.getRAMTotal();
+    long ramUsed = linfo.getRAMUsed();
+    long cmaTotal = linfo.getCMATotal();
+    long cmaUsed = linfo.getCMAUsed();
+
+    drawBarContainer(gfx, 20, 100, 100, 20, 0.0f, 100.0f, coreUsages, "PLoads", false, 0xFF00FF00, InfoBarThresholdsColors);
+    drawBar(gfx, 180, 100, 100, 20, coreLoadAVG, 0.0f, 100.0f, "PAvg", false, false, 0xFF00FF00, InfoBarThresholdsColors);
+    drawBar(gfx, 20, 140, 100, 20, cpuTemp, 0.0f, 85.0f, "PTemp", false, false, 0xFF00FF00, InfoBarThresholdsColors);
+    drawBar(gfx, 180, 140, 100, 20, cpuClock, 0.0f, 1300.0f, "PClock", false, false, 0xFF00FF00, InfoBarThresholdsColors);
+    drawBar(gfx, 20, 180, 100, 20, (float)ramUsed, 0.0f, (float)ramTotal, "RAM", false, false, 0xFF00FF00, InfoBarThresholdsColors);
+    drawBar(gfx, 180, 180, 100, 20, (float)cmaUsed, 0.0f, (float)cmaTotal, "CMA", false, false, 0xFF00FF00, InfoBarThresholdsColors);
 }

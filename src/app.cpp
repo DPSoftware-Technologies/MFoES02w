@@ -52,12 +52,13 @@ void App::init() {
         pthread_mutex_lock(&frameMutex);
         snprintf(statusMsg, sizeof(statusMsg), "Touch: press at (%d, %d)", e.point.x, e.point.y);
         pthread_mutex_unlock(&frameMutex);
-        std::lock_guard<std::mutex> lock(touchQueueMutex);
-        touchQueue.push(e);  
+        {
+            std::lock_guard<std::mutex> lock(touchQueueMutex);
+            touchQueue.push(e);
+        }
 #ifndef DESKTOP
-        buz.set(1); 
-        usleep(25000); 
-        buz.set(0); 
+        // Detach buzzer so the GT911 poll thread is never blocked waiting for it.
+        std::thread([this]() { buz.set(1); usleep(25000); buz.set(0); }).detach();
 #endif
     });
 
@@ -150,7 +151,9 @@ void App::init() {
 
 void App::inputHandle() {
 #ifdef DESKTOP 
-    gfx.processEvents();
+    if (!gfx.processEvents()) { // if stop
+        stop();
+    }
 #endif
     std::lock_guard<std::mutex> lock(touchQueueMutex);
     while (!touchQueue.empty()) {
@@ -188,6 +191,14 @@ void App::process() {
 
     uint32_t nowMs = (uint32_t)(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::high_resolution_clock::now().time_since_epoch()).count() & 0xFFFFFFFF);
+
+    // update every 1 second
+    if (nowMs - lastUpdate1 >= 500) {
+        linfo.update();
+        RRFSYSINFO = true;
+        lastUpdate1 = nowMs;
+    }
+
     ui.update(nowMs);
 
     render();

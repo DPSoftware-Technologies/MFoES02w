@@ -3,3 +3,5 @@
 compile_commands.json
 /temp
 /temp_ota
+/.claude
+claude.md

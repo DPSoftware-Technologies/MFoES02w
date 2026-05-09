@@ -88,12 +88,12 @@ int GT911::readRawTouches(GTPoint* points) {
     i2c.setAddr(addr);
 
     uint8_t flag = readReg(GT911_REG_COORD_ADDR);
-    if (!(flag & 0x80)) return 0;
+    if (!(flag & 0x80)) return -1;  // Buffer not ready — caller must not treat as 0 contacts
 
     int count = flag & 0x0F;
     if (count < 0 || count > GT911_MAX_CONTACTS) {
         writeReg(GT911_REG_COORD_ADDR, 0);
-        return 0;
+        return -1;  // Invalid count — skip this cycle
     }
 
     if (count > 0) {
@@ -235,13 +235,23 @@ bool GT911::waitForInterrupt(int timeout_ms) {
 
 void GT911::pollLoop() {
     GTPoint points[GT911_MAX_CONTACTS];
+    int lastCount = 0;
 
     while (running) {
         bool triggered = waitForInterrupt(20);
-        int count = 0;
-        if (triggered)
-            count = readRawTouches(points);
-        processTouches(points, count);
+
+        if (triggered) {
+            int count = readRawTouches(points);
+            if (count < 0) continue;  // Buffer not ready — skip, don't touch tracked state
+            lastCount = count;
+        } else if (tracked.empty()) {
+            continue;  // Idle timeout with no active fingers — nothing to do
+        }
+        // Either new data arrived (triggered) or we re-clock tracked fingers so
+        // HOLD fires while the finger is stationary and GT911 issues no interrupts.
+        // Re-processing with lastCount and the same points data is safe: dist=0
+        // so no duplicate MOVE, and holdFired prevents duplicate HOLD.
+        processTouches(points, lastCount);
     }
 
     auto now = std::chrono::steady_clock::now();

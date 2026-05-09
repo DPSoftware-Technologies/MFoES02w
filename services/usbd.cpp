@@ -24,7 +24,8 @@
 #define SOCK_PATH       "/var/run/usbd.sock"
 #define MAX_CHANNELS    32
 #define MAX_FRAME_SIZE  (4 * 1024 * 1024)  // 4MB limit — just a check, no allocation
-#define USB_BUF_SIZE    (64 * 1024)         // 64KB — stack buffer, MUST stay small
+#define USB_BUF_SIZE    (512 * 1024)        // 512KB — max combined frame (header + payload)
+#define USB_MAX_PAYLOAD (USB_BUF_SIZE - 12u) // 12 = sizeof(FrameHeader)
 #define RING_SIZE       (16 * 1024 * 1024)  // 16MB — heap allocated, fine
 
 #define FRAME_MAGIC     0x4D554244u    // "MUBD"
@@ -271,7 +272,7 @@ static ssize_t read_all(int fd, void *buf, size_t len) {
         if (r < 0) {
             if (errno == EINTR) continue;
             if (errno == 0 || errno == EAGAIN) {
-                usleep(1000); // wait for next USB transfer
+                // Tight retry — dedicated thread, no sleep needed
                 continue;
             }
             return -1;
@@ -290,6 +291,11 @@ static ssize_t read_all(int fd, void *buf, size_t len) {
 // Only one writer thread should call this — guarded by caller
 // 
 static pthread_mutex_t usb_tx_lock = PTHREAD_MUTEX_INITIALIZER;
+// Pre-allocated frame buffer: header + payload in one contiguous block so
+// usb_send_frame() issues a single write() instead of two.  Two writes would
+// send the 12-byte header as a short USB packet, forcing the host to issue an
+// extra read() per frame and roughly halving throughput.
+static uint8_t *usb_tx_frame_buf = nullptr;
 
 static bool usb_send_frame(uint8_t channel, uint8_t flags,
                            const uint8_t *payload, uint32_t len) {
@@ -301,9 +307,11 @@ static bool usb_send_frame(uint8_t channel, uint8_t flags,
     hdr.length   = htole32(len);
 
     pthread_mutex_lock(&usb_tx_lock);
-    bool ok = (write_all(ep2_fd, &hdr, sizeof(hdr)) == (ssize_t)sizeof(hdr));
-    if (ok && len > 0)
-        ok = (write_all(ep2_fd, payload, len) == (ssize_t)len);
+    memcpy(usb_tx_frame_buf, &hdr, sizeof(hdr));
+    if (len > 0)
+        memcpy(usb_tx_frame_buf + sizeof(hdr), payload, len);
+    ssize_t total = (ssize_t)(sizeof(hdr) + len);
+    bool ok = (write_all(ep2_fd, usb_tx_frame_buf, total) == total);
     pthread_mutex_unlock(&usb_tx_lock);
     return ok;
 }
@@ -318,29 +326,94 @@ static void *channel_tx_thread(void *arg) {
     delete (TxThreadArg*)arg;
     Channel &ch = channels[cid];
 
-    uint8_t txbuf[USB_BUF_SIZE];
+    // Double-buffered ping-pong: fill [nxt] while [cur] is being sent over USB.
+    // This keeps the USB pipe busy instead of idling between transfers.
+    uint8_t *txbuf[2];
+    txbuf[0] = (uint8_t*)malloc(USB_BUF_SIZE);
+    txbuf[1] = (uint8_t*)malloc(USB_BUF_SIZE);
+    if (!txbuf[0] || !txbuf[1]) {
+        fprintf(stderr, "[ch%d] tx malloc failed\n", cid);
+        free(txbuf[0]); free(txbuf[1]);
+        return nullptr;
+    }
 
-    while (g_running && ch.active) {
-        // Wait for data in tx_ring
+    uint32_t txlen[2] = {0, 0};
+    int cur = 0;
+
+    // Pre-fill first buffer before entering the send loop
+    {
         pthread_mutex_lock(&ch.tx_ring.lock);
         while (ch.active && g_running && ch.tx_ring.used() == 0)
             pthread_cond_wait(&ch.tx_ring.cond, &ch.tx_ring.lock);
         uint32_t avail = ch.tx_ring.used();
         pthread_mutex_unlock(&ch.tx_ring.lock);
 
-        if (avail == 0) continue;
-
-        // Read up to USB_BUF_SIZE from ring
-        uint32_t chunk = avail < USB_BUF_SIZE ? avail : USB_BUF_SIZE;
-        if (!ch.tx_ring.read_exact(txbuf, chunk, 100)) continue;
-
-		fprintf(stderr, "[ch%d] tx->usb chunk=%u\n", cid, chunk);  // ← ADD HERE
-        if (!usb_send_frame(cid, FLAG_DATA, txbuf, chunk)) {
-            fprintf(stderr, "[ch%d] USB TX error\n", cid);
-            break;
+        if (avail > 0) {
+            txlen[cur] = avail < USB_MAX_PAYLOAD ? avail : USB_MAX_PAYLOAD;
+            if (!ch.tx_ring.read_exact(txbuf[cur], txlen[cur], 200))
+                txlen[cur] = 0;
         }
     }
 
+    while (g_running && ch.active) {
+        int nxt = 1 - cur;
+
+        // Fill next buffer in parallel (non-blocking attempt first, then short wait)
+        txlen[nxt] = 0;
+        {
+            pthread_mutex_lock(&ch.tx_ring.lock);
+            uint32_t avail = ch.tx_ring.used();
+            pthread_mutex_unlock(&ch.tx_ring.lock);
+
+            if (avail == 0) {
+                // Send current buffer first, then block-wait for more data
+                if (txlen[cur] > 0) {
+                    if (!usb_send_frame(cid, FLAG_DATA, txbuf[cur], txlen[cur])) {
+                        fprintf(stderr, "[ch%d] USB TX error\n", cid);
+                        break;
+                    }
+                    txlen[cur] = 0;
+                }
+                // Now block-wait for new data
+                pthread_mutex_lock(&ch.tx_ring.lock);
+                while (ch.active && g_running && ch.tx_ring.used() == 0)
+                    pthread_cond_wait(&ch.tx_ring.cond, &ch.tx_ring.lock);
+                avail = ch.tx_ring.used();
+                pthread_mutex_unlock(&ch.tx_ring.lock);
+                if (avail == 0) continue;
+                txlen[cur] = avail < USB_MAX_PAYLOAD ? avail : USB_MAX_PAYLOAD;
+                if (!ch.tx_ring.read_exact(txbuf[cur], txlen[cur], 200)) {
+                    txlen[cur] = 0;
+                    continue;
+                }
+                // Back to top — we'll fill nxt on the next iteration
+                continue;
+            }
+
+            // Data available: fill nxt buffer now, send cur concurrently below
+            txlen[nxt] = avail < USB_MAX_PAYLOAD ? avail : USB_MAX_PAYLOAD;
+            if (!ch.tx_ring.read_exact(txbuf[nxt], txlen[nxt], 100))
+                txlen[nxt] = 0;
+        }
+
+        // Send cur buffer — USB write happens here (blocking)
+        if (txlen[cur] > 0) {
+            if (!usb_send_frame(cid, FLAG_DATA, txbuf[cur], txlen[cur])) {
+                fprintf(stderr, "[ch%d] USB TX error\n", cid);
+                break;
+            }
+        }
+
+        // Swap buffers
+        cur = nxt;
+    }
+
+    // Flush whatever is left in cur
+    if (txlen[cur] > 0)
+        usb_send_frame(cid, FLAG_DATA, txbuf[cur], txlen[cur]);
+
+    free(txbuf[0]);
+    free(txbuf[1]);
     return nullptr;
 }
 
@@ -389,8 +462,6 @@ static void *channel_rx_thread(void *arg) {
             continue;
         }
 
-        fprintf(stderr, "[ch%d] usb->app plen=%u\n", cid, plen);
-
         // Forward to app socket: [4B len][data]
         pthread_mutex_lock(&ch.sock_lock);
         uint32_t net_len = htole32(plen);
@@ -413,20 +484,23 @@ static void *app_reader_thread(void *arg) {
     delete (AppReaderArg*)arg;
     Channel &ch = channels[cid];
 
-    uint8_t buf[USB_BUF_SIZE];
+    // Heap-allocated — USB_BUF_SIZE is now 512KB, too large for stack
+    uint8_t *buf = (uint8_t*)malloc(USB_BUF_SIZE);
+    if (!buf) {
+        fprintf(stderr, "[ch%d] app_reader malloc failed\n", cid);
+        return nullptr;
+    }
 
     while (g_running && ch.active) {
         // App sends [4B len][data]
         uint32_t plen = 0;
         if (read_all(ch.sock_fd, &plen, 4) != 4) break;
         plen = le32toh(plen);
-		fprintf(stderr, "[ch%d] app->tx plen=%u\n", cid, plen);  // ← ADD HERE
         if (plen == 0 || plen > MAX_FRAME_SIZE) break;
-		
 
         uint32_t remaining = plen;
         while (remaining > 0) {
-            uint32_t chunk = remaining < USB_BUF_SIZE ? remaining : USB_BUF_SIZE;
+            uint32_t chunk = remaining < (uint32_t)USB_BUF_SIZE ? remaining : (uint32_t)USB_BUF_SIZE;
             if (read_all(ch.sock_fd, buf, chunk) != (ssize_t)chunk) goto done;
             // Write to tx_ring (may block if full)
             uint32_t written = 0;
@@ -441,6 +515,7 @@ done:
     fprintf(stderr, "[ch%d] app disconnected\n", cid);
     ch.active = false;
     usb_send_frame(cid, FLAG_CLOSE, nullptr, 0);
+    free(buf);
     return nullptr;
 }
 
@@ -481,7 +556,6 @@ static void *usb_rx_thread(void *) {
         }
         memcpy(reassembly + reassembly_len, readbuf, r);
         reassembly_len += r;
-        fprintf(stderr, "[usb_rx] +%zd bytes total=%zu\n", r, reassembly_len);
 
         // Process complete frames
         size_t consumed = 0;
@@ -498,9 +572,6 @@ static void *usb_rx_thread(void *) {
             uint8_t  cid     = hdr->channel;
             uint8_t  flag    = hdr->flags;
             uint8_t *payload = reassembly + consumed + sizeof(FrameHeader);
-
-            fprintf(stderr, "[usb_rx] frame ch=%d flags=%d plen=%u\n",
-                    cid, flag, plen);
 
             pthread_mutex_lock(&channels_lock);
             bool active = channels[cid].active;
@@ -720,7 +791,10 @@ int main(int argc, char *argv[]) {
     if (listen(srv, 16) < 0) { perror("listen"); return 1; }
     fprintf(stderr, "[usbd] IPC socket ready at %s\n", SOCK_PATH);
 
-    //  Spawn threads 
+    usb_tx_frame_buf = (uint8_t*)malloc(USB_BUF_SIZE);
+    if (!usb_tx_frame_buf) { perror("malloc tx frame buf"); return 1; }
+
+    //  Spawn threads
     pthread_t t;
 
     pthread_create(&t, nullptr, ep0_thread, nullptr); pthread_detach(t);
@@ -740,6 +814,7 @@ int main(int argc, char *argv[]) {
     close(ep2_fd);
     close(ep0_fd);
     unlink(SOCK_PATH);
+    free(usb_tx_frame_buf);
 
     return 0;
 }

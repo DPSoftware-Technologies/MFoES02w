@@ -2,13 +2,18 @@
     "configurations": [
         {
             "name": "MFOES02W",
-            "compileCommands": "${workspaceFolder}/compile_commands.json",
+            "compileCommands": [
+                "${workspaceFolder}/compile_commands.json"
+            ],
             "includePath": [
                 "${workspaceFolder}/libs/libgfx",
-                "${workspaceFolder}/include"
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/libs/linfo",
+                "${workspaceFolder}/libs",
+                "${workspaceFolder}/libs/uisys"
             ],
-            "cppStandard": "c++17",
-            "intelliSenseMode": "gcc-x64"
+            "cppStandard": "c++20",
+            "intelliSenseMode": "linux-gcc-arm64"
         }
     ],
     "version": 4

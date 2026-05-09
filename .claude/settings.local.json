@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep -l \"EPOLL\\\\|epoll_wait\\\\|poll\")",
+      "Bash(grep -E \"\\(README|CLAUDE|CONTRIBUTING|\\\\.md$|Makefile|package\\\\.json|requirements\\\\.txt|setup\\\\.py\\)\")",
+      "Read(///wsl.localhost/Ubuntu-24.04/root/MFoES02w/**)"
+    ]
+  }
+}

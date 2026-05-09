@@ -22,6 +22,75 @@
 
 #ifdef GFXSDL
 #include <SDL2/SDL.h>
+#elif defined(GFX_USE_DRM)
+// ---- DRM/KMS UAPI -- raw Linux kernel stable ABI, no libdrm required --------
+// Structs and ioctl numbers from linux/include/uapi/drm/{drm.h,drm_mode.h}.
+// These are frozen kernel ABI and will not change.
+// _IOWR/_IOW come from <sys/ioctl.h> (included above).
+#ifndef DRM_IOWR
+#  define DRM_IOWR(nr,t) _IOWR('d', nr, t)
+#  define DRM_IOW(nr,t)  _IOW('d',  nr, t)
+#endif
+#define DRM_DISPLAY_MODE_LEN 32
+struct drm_mode_modeinfo {
+    uint32_t clock;
+    uint16_t hdisplay, hsync_start, hsync_end, htotal, hskew;
+    uint16_t vdisplay, vsync_start, vsync_end, vtotal, vscan;
+    uint32_t vrefresh, flags, type;
+    char     name[DRM_DISPLAY_MODE_LEN];
+};
+struct drm_mode_card_res {
+    uint64_t fb_id_ptr, crtc_id_ptr, connector_id_ptr, encoder_id_ptr;
+    uint32_t count_fbs, count_crtcs, count_connectors, count_encoders;
+    uint32_t min_width, max_width, min_height, max_height;
+};
+struct drm_mode_get_encoder {
+    uint32_t encoder_id, encoder_type, crtc_id, possible_crtcs, possible_clones;
+};
+struct drm_mode_get_connector {
+    uint64_t encoders_ptr, modes_ptr, props_ptr, prop_values_ptr;
+    uint32_t count_modes, count_props, count_encoders;
+    uint32_t encoder_id, connector_id, connector_type, connector_type_id;
+    uint32_t connection;   // 1 = connected
+    uint32_t mm_width, mm_height, subpixel, pad;
+};
+struct drm_mode_crtc {
+    uint64_t set_connectors_ptr;
+    uint32_t count_connectors, crtc_id, fb_id, x, y, gamma_size, mode_valid;
+    struct drm_mode_modeinfo mode;
+};
+struct drm_mode_fb_cmd {
+    uint32_t fb_id, width, height, pitch, bpp, depth, handle;
+};
+struct drm_mode_create_dumb {
+    uint32_t height, width, bpp, flags, handle, pitch;
+    uint64_t size;
+};
+struct drm_mode_map_dumb    { uint32_t handle, pad; uint64_t offset; };
+struct drm_mode_destroy_dumb{ uint32_t handle; };
+struct drm_mode_page_flip   {
+    uint32_t crtc_id, fb_id, flags, reserved;
+    uint64_t user_data;
+};
+struct drm_event            { uint32_t type, length; };
+struct drm_event_vblank     {
+    struct drm_event base;
+    uint64_t user_data;
+    uint32_t tv_sec, tv_usec, sequence, crtc_id;
+};
+#define DRM_IOCTL_MODE_GETRESOURCES  DRM_IOWR(0xA0, struct drm_mode_card_res)
+#define DRM_IOCTL_MODE_SETCRTC       DRM_IOWR(0xA2, struct drm_mode_crtc)
+#define DRM_IOCTL_MODE_GETENCODER    DRM_IOWR(0xA6, struct drm_mode_get_encoder)
+#define DRM_IOCTL_MODE_GETCONNECTOR  DRM_IOWR(0xA7, struct drm_mode_get_connector)
+#define DRM_IOCTL_MODE_ADDFB         DRM_IOWR(0xAE, struct drm_mode_fb_cmd)
+#define DRM_IOCTL_MODE_RMFB          DRM_IOWR(0xAF, unsigned int)
+#define DRM_IOCTL_MODE_PAGE_FLIP     DRM_IOWR(0xB0, struct drm_mode_page_flip)
+#define DRM_IOCTL_MODE_CREATE_DUMB   DRM_IOWR(0xB2, struct drm_mode_create_dumb)
+#define DRM_IOCTL_MODE_MAP_DUMB      DRM_IOWR(0xB3, struct drm_mode_map_dumb)
+#define DRM_IOCTL_MODE_DESTROY_DUMB  DRM_IOWR(0xB4, struct drm_mode_destroy_dumb)
+#define DRM_MODE_PAGE_FLIP_EVENT     0x01u
+#define DRM_EVENT_FLIP_COMPLETE      0x02u
+// ---- end DRM UAPI -----------------------------------------------------------
 #else
 #include <linux/fb.h>
 #endif
@@ -38,7 +107,7 @@ LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
       m_width(width), m_height(height),
       m_cursorX(0), m_cursorY(0),
       m_textColor(GFX_WHITE), m_textBgColor(GFX_TRANSPARENT),
-      m_textSizeX(1), m_textSizeY(1),
+      m_textSizeX(1), m_textSizeY(1), m_textRotation(0),
       m_textWrap(true), m_rotation(0),
       m_inverted(false), m_inTransaction(false),
       m_pFont(nullptr), m_fontSizeMultiplied(true)
@@ -101,7 +170,7 @@ LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
     fprintf(stderr, "GFX: SDL window %s OK (%dx%d @ 32bpp ARGB8888)\n", title, width, height);
 }
 
-#else
+#elif !defined(GFX_USE_DRM)
 
 LinuxGFX::LinuxGFX(const char *fbdev)
     : m_fbFd(-1), m_pFbMem(nullptr), m_fbMemSize(0),
@@ -111,7 +180,7 @@ LinuxGFX::LinuxGFX(const char *fbdev)
       m_width(0), m_height(0),
       m_cursorX(0), m_cursorY(0),
       m_textColor(GFX_WHITE), m_textBgColor(GFX_TRANSPARENT),
-      m_textSizeX(1), m_textSizeY(1),
+      m_textSizeX(1), m_textSizeY(1), m_textRotation(0),
       m_textWrap(true), m_rotation(0),
       m_inverted(false), m_inTransaction(false),
       m_pFont(nullptr), m_fontSizeMultiplied(true)
@@ -161,13 +230,216 @@ LinuxGFX::LinuxGFX(const char *fbdev)
     fprintf(stderr, "GFX: framebuffer %s OK (%dx%d @ %d bpp ARGB8888, pitch=%d)\n",
             dev, m_width, m_height, m_depth, m_pitch);
 }
-#endif
+#endif // GFXSDL / GFX_USE_DRM / fbdev constructor selection
+
+// =============================================================================
+// DRM/KMS back-end constructor
+// =============================================================================
+#ifdef GFX_USE_DRM
+LinuxGFX::LinuxGFX(const char *drmdev)
+    : m_fbFd(-1), m_pFbMem(nullptr), m_fbMemSize(0),
+      m_pitch(0), m_depth(32), m_pBuffer(nullptr),
+      m_bufferCount(1), m_drawBufferIndex(0), m_displayBufferIndex(0),
+      m_multiBufferEnabled(false),
+      m_drmFd(-1), m_drmCrtcId(0), m_drmConnId(0),
+      m_drmFront(0), m_drmFlipPending(false),
+      m_width(0), m_height(0),
+      m_cursorX(0), m_cursorY(0),
+      m_textColor(GFX_WHITE), m_textBgColor(GFX_TRANSPARENT),
+      m_textSizeX(1), m_textSizeY(1), m_textRotation(0),
+      m_textWrap(true), m_rotation(0),
+      m_inverted(false), m_inTransaction(false),
+      m_pFont(nullptr), m_fontSizeMultiplied(true)
+{
+    memset(m_drmBufs, 0, sizeof(m_drmBufs));
+
+    const char *dev = drmdev ? drmdev : "/dev/dri/card0";
+    m_drmFd = open(dev, O_RDWR | O_CLOEXEC);
+    if (m_drmFd < 0) {
+        fprintf(stderr, "GFX/DRM: cannot open %s: %s\n", dev, strerror(errno));
+        return;
+    }
+
+    // --- 1. Get resource counts (first call with zero ptrs) ------------------
+    drm_mode_card_res res = {};
+    if (ioctl(m_drmFd, DRM_IOCTL_MODE_GETRESOURCES, &res)) {
+        fprintf(stderr, "GFX/DRM: GETRESOURCES failed: %s\n", strerror(errno));
+        close(m_drmFd); m_drmFd = -1; return;
+    }
+    if (res.count_connectors == 0 || res.count_crtcs == 0) {
+        fprintf(stderr, "GFX/DRM: no connectors or CRTCs found\n");
+        close(m_drmFd); m_drmFd = -1; return;
+    }
+
+    // --- 2. Fill in ID arrays (second call) ----------------------------------
+    uint32_t conn_ids[16] = {}, crtc_ids[16] = {}, enc_ids[16] = {};
+    uint32_t nc = res.count_connectors < 16 ? res.count_connectors : 16;
+    uint32_t nk = res.count_crtcs      < 16 ? res.count_crtcs      : 16;
+    uint32_t ne = res.count_encoders   < 16 ? res.count_encoders    : 16;
+    res.connector_id_ptr = (uint64_t)(uintptr_t)conn_ids;
+    res.crtc_id_ptr      = (uint64_t)(uintptr_t)crtc_ids;
+    res.encoder_id_ptr   = (uint64_t)(uintptr_t)enc_ids;
+    res.count_connectors = nc;
+    res.count_crtcs      = nk;
+    res.count_encoders   = ne;
+    if (ioctl(m_drmFd, DRM_IOCTL_MODE_GETRESOURCES, &res)) {
+        fprintf(stderr, "GFX/DRM: GETRESOURCES (2nd) failed: %s\n", strerror(errno));
+        close(m_drmFd); m_drmFd = -1; return;
+    }
+
+    // --- 3. Find first connected connector with at least one mode ------------
+    drm_mode_modeinfo sel_mode = {};
+    for (uint32_t i = 0; i < nc && m_drmConnId == 0; i++) {
+        drm_mode_get_connector c = {};
+        c.connector_id = conn_ids[i];
+        if (ioctl(m_drmFd, DRM_IOCTL_MODE_GETCONNECTOR, &c)) continue;
+        if (c.connection != 1 || c.count_modes == 0) continue; // not connected
+
+        // Second connector call: read up to 64 modes
+        drm_mode_modeinfo modes[64] = {};
+        uint32_t nm = c.count_modes < 64 ? c.count_modes : 64;
+        drm_mode_get_connector c2 = {};
+        c2.connector_id = conn_ids[i];
+        c2.modes_ptr    = (uint64_t)(uintptr_t)modes;
+        c2.count_modes  = nm;
+        if (ioctl(m_drmFd, DRM_IOCTL_MODE_GETCONNECTOR, &c2)) continue;
+
+        m_drmConnId = conn_ids[i];
+        sel_mode    = modes[0]; // first mode = preferred / highest res
+
+        // Find CRTC via active encoder
+        if (c.encoder_id) {
+            drm_mode_get_encoder enc = {};
+            enc.encoder_id = c.encoder_id;
+            if (!ioctl(m_drmFd, DRM_IOCTL_MODE_GETENCODER, &enc)) {
+                if (enc.crtc_id) {
+                    m_drmCrtcId = enc.crtc_id;
+                } else {
+                    // encoder attached but no active CRTC — pick from possible_crtcs
+                    for (uint32_t k = 0; k < nk && !m_drmCrtcId; k++)
+                        if (enc.possible_crtcs & (1u << k))
+                            m_drmCrtcId = crtc_ids[k];
+                }
+            }
+        }
+        // Fallback: use first available CRTC
+        if (!m_drmCrtcId && nk > 0)
+            m_drmCrtcId = crtc_ids[0];
+    }
+
+    if (!m_drmConnId || !m_drmCrtcId) {
+        fprintf(stderr, "GFX/DRM: no active connector/CRTC found\n");
+        close(m_drmFd); m_drmFd = -1; return;
+    }
+
+    m_width  = (int16_t)sel_mode.hdisplay;
+    m_height = (int16_t)sel_mode.vdisplay;
+
+    // --- 4. Create two dumb buffers (double-buffering) -----------------------
+    for (int i = 0; i < 2; i++) {
+        drm_mode_create_dumb dumb = {};
+        dumb.width  = (uint32_t)m_width;
+        dumb.height = (uint32_t)m_height;
+        dumb.bpp    = 32;
+        if (ioctl(m_drmFd, DRM_IOCTL_MODE_CREATE_DUMB, &dumb)) {
+            fprintf(stderr, "GFX/DRM: CREATE_DUMB[%d] failed: %s\n", i, strerror(errno));
+            goto drm_init_fail;
+        }
+        m_drmBufs[i].handle = dumb.handle;
+        m_drmBufs[i].pitch  = dumb.pitch;
+        m_drmBufs[i].size   = (uint32_t)dumb.size;
+
+        drm_mode_fb_cmd fb = {};
+        fb.width  = (uint32_t)m_width;
+        fb.height = (uint32_t)m_height;
+        fb.pitch  = dumb.pitch;
+        fb.bpp    = 32;
+        fb.depth  = 24; // XRGB8888 — alpha byte ignored by display
+        fb.handle = dumb.handle;
+        if (ioctl(m_drmFd, DRM_IOCTL_MODE_ADDFB, &fb)) {
+            fprintf(stderr, "GFX/DRM: ADDFB[%d] failed: %s\n", i, strerror(errno));
+            goto drm_init_fail;
+        }
+        m_drmBufs[i].fb_id = fb.fb_id;
+
+        drm_mode_map_dumb mapd = {};
+        mapd.handle = dumb.handle;
+        if (ioctl(m_drmFd, DRM_IOCTL_MODE_MAP_DUMB, &mapd)) {
+            fprintf(stderr, "GFX/DRM: MAP_DUMB[%d] failed: %s\n", i, strerror(errno));
+            goto drm_init_fail;
+        }
+
+        void *ptr = mmap(nullptr, dumb.size, PROT_READ | PROT_WRITE,
+                         MAP_SHARED, m_drmFd, (off_t)mapd.offset);
+        if (ptr == MAP_FAILED) {
+            fprintf(stderr, "GFX/DRM: mmap[%d] failed: %s\n", i, strerror(errno));
+            m_drmBufs[i].map = nullptr;
+            goto drm_init_fail;
+        }
+        m_drmBufs[i].map = (uint8_t*)ptr;
+        memset(m_drmBufs[i].map, 0, dumb.size);
+    }
+
+    // --- 5. Initial mode-set: display buffer 0 -------------------------------
+    {
+        uint32_t conn_arr[1] = { m_drmConnId };
+        drm_mode_crtc crtc = {};
+        crtc.crtc_id             = m_drmCrtcId;
+        crtc.fb_id               = m_drmBufs[0].fb_id;
+        crtc.set_connectors_ptr  = (uint64_t)(uintptr_t)conn_arr;
+        crtc.count_connectors    = 1;
+        crtc.mode                = sel_mode;
+        crtc.mode_valid          = 1;
+        if (ioctl(m_drmFd, DRM_IOCTL_MODE_SETCRTC, &crtc)) {
+            fprintf(stderr, "GFX/DRM: SETCRTC failed: %s\n", strerror(errno));
+            goto drm_init_fail;
+        }
+    }
+
+    m_drmFront = 0;                               // buf 0 is on screen
+    m_pitch    = m_drmBufs[0].pitch;
+    m_pBuffer  = (uint32_t*)m_drmBufs[1].map;    // draw into buf 1
+    _initializeMultiBuffer();
+
+    fprintf(stderr, "GFX/DRM: %s OK  conn=%u crtc=%u  %dx%d  pitch=%u  bufs=[%u,%u]\n",
+            dev, m_drmConnId, m_drmCrtcId,
+            m_width, m_height, m_pitch,
+            m_drmBufs[0].fb_id, m_drmBufs[1].fb_id);
+    return;
+
+drm_init_fail:
+    // Release anything allocated so far; m_drmFd stays open until stop()
+    for (int i = 0; i < 2; i++) {
+        if (m_drmBufs[i].map)   munmap(m_drmBufs[i].map, m_drmBufs[i].size);
+        if (m_drmBufs[i].fb_id) ioctl(m_drmFd, DRM_IOCTL_MODE_RMFB, &m_drmBufs[i].fb_id);
+        if (m_drmBufs[i].handle) {
+            drm_mode_destroy_dumb dd = { m_drmBufs[i].handle };
+            ioctl(m_drmFd, DRM_IOCTL_MODE_DESTROY_DUMB, &dd);
+        }
+    }
+    memset(m_drmBufs, 0, sizeof(m_drmBufs));
+    close(m_drmFd); m_drmFd = -1;
+}
+#endif // GFX_USE_DRM
 
 void LinuxGFX::stop() {
-    // Clean up multi-buffers first (if enabled)
     _cleanupMultiBuffer();
 
-#ifdef GFXSDL
+#if defined(GFX_USE_DRM)
+    if (m_drmFd < 0) return;
+    if (m_drmFlipPending) _drmWaitFlip();
+    for (int i = 0; i < 2; i++) {
+        if (m_drmBufs[i].map && m_drmBufs[i].size)
+            munmap(m_drmBufs[i].map, m_drmBufs[i].size);
+        if (m_drmBufs[i].fb_id)
+            ioctl(m_drmFd, DRM_IOCTL_MODE_RMFB, &m_drmBufs[i].fb_id);
+        if (m_drmBufs[i].handle) {
+            drm_mode_destroy_dumb dd = { m_drmBufs[i].handle };
+            ioctl(m_drmFd, DRM_IOCTL_MODE_DESTROY_DUMB, &dd);
+        }
+    }
+    close(m_drmFd); m_drmFd = -1;
+#elif defined(GFXSDL)
     if (m_pTexture) SDL_DestroyTexture(m_pTexture);
     if (m_pRenderer) SDL_DestroyRenderer(m_pRenderer);
     if (m_pWindow) SDL_DestroyWindow(m_pWindow);
@@ -217,18 +489,36 @@ void LinuxGFX::drawRGBBitmap(int16_t x, int16_t y, uint32_t *bitmap, int16_t w, 
 }
 
 void LinuxGFX::_flushToFb() {
-#ifdef GFXSDL
-    // In SDL mode, always render from m_pSurfaceBuffer (multi-buffer is disabled in GFXSDL)
+#if defined(GFX_USE_DRM)
+    if (m_drmFd < 0 || !m_pBuffer) return;
+
+    // Wait for any prior flip before issuing a new one
+    if (m_drmFlipPending) _drmWaitFlip();
+
+    uint8_t back = 1u - m_drmFront; // the buffer we just drew into
+
+    drm_mode_page_flip flip = {};
+    flip.crtc_id = m_drmCrtcId;
+    flip.fb_id   = m_drmBufs[back].fb_id;
+    flip.flags   = DRM_MODE_PAGE_FLIP_EVENT;
+
+    if (ioctl(m_drmFd, DRM_IOCTL_MODE_PAGE_FLIP, &flip) == 0) {
+        m_drmFlipPending = true;
+        _drmWaitFlip(); // block until vsync — prevents tearing
+    } else {
+        fprintf(stderr, "GFX/DRM: PAGE_FLIP failed: %s\n", strerror(errno));
+    }
+
+    m_drmFront = back;
+    m_pBuffer  = (uint32_t*)m_drmBufs[1u - m_drmFront].map;
+#elif defined(GFXSDL)
     if (!m_pTexture || !m_pSurfaceBuffer || !m_pRenderer) return;
-    
-    // Proper SDL rendering order: clear -> update texture -> copy -> present
-    SDL_SetRenderDrawColor(m_pRenderer, 0, 0, 0, 255);  // Black background
+    SDL_SetRenderDrawColor(m_pRenderer, 0, 0, 0, 255);
     SDL_RenderClear(m_pRenderer);
     SDL_UpdateTexture(m_pTexture, nullptr, m_pSurfaceBuffer, m_width * sizeof(uint32_t));
     SDL_RenderCopy(m_pRenderer, m_pTexture, nullptr, nullptr);
     SDL_RenderPresent(m_pRenderer);
 #else
-    // In framebuffer mode, copy from current buffer to framebuffer (or use multi-buffer display buffer)
     if (!m_pFbMem || !m_pBuffer) return;
     if ((uint8_t*)m_pBuffer == m_pFbMem) return;
     if (m_multiBufferEnabled) {
@@ -239,6 +529,24 @@ void LinuxGFX::_flushToFb() {
     }
 #endif
 }
+
+#ifdef GFX_USE_DRM
+void LinuxGFX::_drmWaitFlip() {
+    struct pollfd pfd = { m_drmFd, POLLIN, 0 };
+    if (poll(&pfd, 1, 1000) <= 0) { m_drmFlipPending = false; return; }
+
+    uint8_t evbuf[256];
+    ssize_t n = read(m_drmFd, evbuf, sizeof(evbuf));
+    int off = 0;
+    while (off + (int)sizeof(drm_event) <= (int)n) {
+        const drm_event *ev = (const drm_event*)(evbuf + off);
+        if (ev->length < (uint32_t)sizeof(drm_event) ||
+            off + (int)ev->length > (int)n) break;
+        if (ev->type == DRM_EVENT_FLIP_COMPLETE) m_drmFlipPending = false;
+        off += (int)ev->length;
+    }
+}
+#endif
 
 void LinuxGFX::_initializeMultiBuffer() {
     for (uint8_t i = 0; i < 3; i++) {
@@ -262,7 +570,11 @@ void LinuxGFX::_cleanupMultiBuffer() {
 }
 
 bool LinuxGFX::enableMultiBuffer(uint8_t numBuffers) {
-#ifdef GFXSDL
+#if defined(GFX_USE_DRM)
+    // DRM already double-buffers internally via page-flip; no extra allocation needed.
+    (void)numBuffers;
+    return true;
+#elif defined(GFXSDL)
     // Allocate a real back buffer so drawing doesn't go directly to m_pSurfaceBuffer
     size_t bufSize = (size_t)m_width * (size_t)m_height * sizeof(uint32_t);
     
@@ -818,6 +1130,105 @@ void LinuxGFX::writeTextF(const char *fmt, ...) {
     writeText(buf.data());
 }
 
+void LinuxGFX::print(const char *text) {
+    writeText(text);
+}
+
+void LinuxGFX::println(const char *text) {
+    writeText(text);
+    m_cursorX = 0;
+    m_cursorY += m_textSizeY * (m_pFont ? m_pFont->yAdvance : 8);
+}
+
+void LinuxGFX::println() {
+    m_cursorX = 0;
+    m_cursorY += m_textSizeY * (m_pFont ? m_pFont->yAdvance : 8);
+}
+
+// Helper function to rotate a point around an origin
+static void rotatePoint(int16_t& x, int16_t& y, int16_t originX, int16_t originY, uint8_t rotation) {
+    if (rotation == 0) return;
+    
+    // Translate to origin
+    int16_t dx = x - originX;
+    int16_t dy = y - originY;
+    
+    // Apply rotation (simplified for 90-degree increments)
+    int16_t newDx = dx, newDy = dy;
+    switch (rotation % 360) {
+        case 90:
+            newDx = dy;
+            newDy = -dx;
+            break;
+        case 180:
+            newDx = -dx;
+            newDy = -dy;
+            break;
+        case 270:
+            newDx = -dy;
+            newDy = dx;
+            break;
+    }
+    
+    // Translate back
+    x = originX + newDx;
+    y = originY + newDy;
+}
+
+// Write text with rotation support
+void LinuxGFX::writeTextRotated(const char *text, int16_t originX, int16_t originY) {
+    int16_t startX = m_cursorX;
+    int16_t startY = m_cursorY;
+    
+    while (*text) {
+        unsigned char c = *text++;
+        if (c == '\n') {
+            m_cursorX = startX;
+            m_cursorY += m_textSizeY * (m_pFont ? m_pFont->yAdvance : 8);
+        } else if (c != '\r') {
+            int16_t adv = m_pFont ? m_pFont->glyph[c - m_pFont->first].xAdvance : 6;
+            if (m_textWrap && (m_cursorX + m_textSizeX * adv > m_width)) {
+                m_cursorX = startX;
+                m_cursorY += m_textSizeY * (m_pFont ? m_pFont->yAdvance : 8);
+            }
+            
+            int16_t charX = m_cursorX;
+            int16_t charY = m_cursorY;
+            rotatePoint(charX, charY, originX, originY, m_textRotation);
+            
+            drawChar(charX, charY, c, m_textColor, m_textBgColor,
+                     m_textSizeX, m_textSizeY);
+            m_cursorX += m_textSizeX * adv;
+        }
+    }
+}
+
+// All-in-one text drawing function
+void LinuxGFX::setText(int16_t x, int16_t y, const char *text, uint32_t color, 
+                       uint32_t bgColor, uint8_t sizeX, uint8_t sizeY, const GFXfont *font,
+                       uint8_t rotation) {
+    setCursor(x, y);
+    setTextColor(color, bgColor);
+    setTextSize(sizeX, sizeY);
+    setFont(font);
+    setTextRotation(rotation);
+    
+    if (rotation == 0) {
+        writeText(text);
+    } else {
+        writeTextRotated(text, x, y);
+    }
+}
+
+void LinuxGFX::setTextRotation(uint8_t rotation) {
+    m_textRotation = rotation % 360;
+}
+
+uint8_t LinuxGFX::getTextRotation() const {
+    return m_textRotation;
+}
+
+
 void LinuxGFX::setFont     (const GFXfont *f)         { m_pFont = f; }
 void LinuxGFX::setCursor   (int16_t x, int16_t y)     { m_cursorX = x; m_cursorY = y; }
 void LinuxGFX::setTextColor(uint32_t c)                { m_textColor = c; m_textBgColor = GFX_TRANSPARENT; }
@@ -958,42 +1369,30 @@ void LinuxGFX::getMousePosition(int16_t& x, int16_t& y) const {
 //  Initialises all common members to safe defaults without opening any fd.
 // ---------------------------------------------------------------------------
 LinuxGFX::LinuxGFX(CanvasTag) noexcept
-    :
-#ifdef GFX_USE_DRM_DUMB
-      m_drmFd(-1),
-      m_connId(0), m_crtcId(0), m_modeIdx(0),
-      m_drawIdx(1), m_dispIdx(0),
-      m_flipPending(false),
-#else
-      m_fbFd(-1),
-      m_pFbMem(nullptr),
-      m_fbMemSize(0),
-      m_pitch(0),
-      m_depth(32),
-      m_bufferCount(0),
-      m_drawBufferIndex(0),
-      m_displayBufferIndex(0),
+    : m_fbFd(-1), m_pFbMem(nullptr), m_fbMemSize(0),
+      m_pitch(0), m_depth(32),
+      m_bufferCount(0), m_drawBufferIndex(0), m_displayBufferIndex(0),
       m_multiBufferEnabled(false),
+#ifdef GFX_USE_DRM
+      m_drmFd(-1), m_drmCrtcId(0), m_drmConnId(0),
+      m_drmFront(0), m_drmFlipPending(false),
 #endif
       m_pBuffer(nullptr),
       m_width(0), m_height(0),
       m_cursorX(0), m_cursorY(0),
       m_textColor(GFX_WHITE), m_textBgColor(GFX_TRANSPARENT),
-      m_textSizeX(1), m_textSizeY(1),
+      m_textSizeX(1), m_textSizeY(1), m_textRotation(0),
       m_textWrap(true), m_rotation(0),
       m_inverted(false), m_inTransaction(false),
       m_pFont(nullptr), m_fontSizeMultiplied(true)
 {
-#ifdef GFX_USE_DRM_DUMB
-    for (int i = 0; i < kNumDrmBufs; i++)
-        m_drm[i] = { 0, 0, 0, 0, nullptr };
-    memset(&m_selectedMode, 0, sizeof(m_selectedMode));
-#else
     for (int i = 0; i < 3; i++) {
         m_buffers[i].pData  = nullptr;
         m_buffers[i].bOwned = false;
         m_buffers[i].bReady = false;
     }
+#ifdef GFX_USE_DRM
+    memset(m_drmBufs, 0, sizeof(m_drmBufs));
 #endif
 }
 

@@ -1,75 +1,32 @@
-#ifndef APP_H
-#define APP_H
+#pragma once
 
 #include <GFX.h>
 #include "hwinterface/gt911.h"
-
+#include <linfo.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <string.h>
 #include <queue>
 #include <mutex>
+#include <thread>
 #include "uisys/manager.h"
 #include <unistd.h>
+#include <UIwidget.h>
 
-#define APP_FPS 60
-#define SCREEN_W     1280
-#define SCREEN_H     720
+#define APP_FPS 30
+#define SCREEN_W 1280
+#define SCREEN_H 720
 
 #ifndef DESKTOP
 #include "hwinterface/i2c_dev.h"
 #include "hwinterface/usbd_client.h"
 #include "hwinterface/pwm.h"
 
-#define FRAME_PIXELS (SCREEN_W * SCREEN_H)
-#define FRAME_SIZE   (FRAME_PIXELS * 2)
-
-#define MSG_FRAME        0xF0   // raw full frame (legacy)
-#define MSG_TILE         0xF1   // tiled full frame (legacy)
-#define MSG_FRAME_TILED  0xF2   // single-send full frame
-#define MSG_TILE_UPDATE  0xF5   // DTS: single tile update
-#define MSG_UPDATE_VALUE 0xD0   // Update value
-
-#define TILES_X     8
-#define TILES_Y     4
-#define TILE_W      (SCREEN_W / TILES_X)   // 160
-#define TILE_H      (SCREEN_H / TILES_Y)   // 180
-#define TILE_SIZE   (TILE_W * TILE_H * 2)  // 57,600 bytes
-
-#define DTS_TILES_X  16
-#define DTS_TILES_Y  9
-#define DTS_TILE_W   (SCREEN_W / DTS_TILES_X)   // 80px
-#define DTS_TILE_H   (SCREEN_H / DTS_TILES_Y)   // 80px
-#define DTS_TILE_SIZE (DTS_TILE_W * DTS_TILE_H * 2)  // 12,800 bytes
+#include "dts.h"
 
 #endif
 
 #pragma pack(push, 1)
-
-#ifndef DESKTOP
-struct FrameTiledHeader {
-    uint8_t  type;      // MSG_FRAME_TILED
-    uint8_t  tiles_x;
-    uint8_t  tiles_y;
-    uint16_t screen_w;
-    uint16_t screen_h;
-};  // 7 bytes
-
-struct TileHeader {
-    uint8_t  type;      // MSG_TILE
-    uint8_t  tx, ty;
-    uint8_t  tiles_x, tiles_y;
-    uint16_t tile_w, tile_h;
-    float    reserved;
-};  // 13 bytes
-
-struct TileUpdateHeader {
-    uint8_t  type;   // MSG_TILE_UPDATE
-    uint8_t  tx, ty;
-    uint16_t tw, th;
-};  // 7 bytes
-
-#endif
 
 struct CValue { // Custom Value
     uint8_t  type;
@@ -118,7 +75,6 @@ class App {
         // touch
         std::queue<TouchEventData> touchQueue;
         std::mutex touchQueueMutex;
-
         // system msg
         char statusMsg[128];
 
@@ -127,6 +83,8 @@ class App {
         std::function<void()> _pendingAction; 
         std::queue<std::function<void()>> _actionQueue;
         std::mutex _actionQueueMutex;
+
+        Linfo linfo;
 
         // app
         int sw = gfx.width();
@@ -142,24 +100,35 @@ class App {
         // render
         void renderAbout();
         void renderDataInInfo();
+        void renderInfo();
         void render(bool forceRender=false);
+        
         void process();
         void inputHandle();
 
+        void setView(std::string view);
+
         // Data input handler
         CValue cvdata = {};
-
-        // helper function
-        void drawGauge(int x, int y, int r, float value, float minVal, float maxVal);
         
         bool show_about = false;
         bool hide_ui = false;
         bool show_data_in = false;
+        bool show_info = false;
 
         // Request Render For ...
         bool RRFDTS = false;
         bool RRFSYSMSG = false;
+        bool RRFSYSINFO = false;
         bool RRFF = false; // Force render
+        
+        uint32_t lastUpdate1 = 0;
+};
+
+static std::vector<ColorThreshold> InfoBarThresholdsColors {
+    {0.0f,  0xFF00FF00}, // Green for 0 and up
+    {70.0f, 0xFFFFFF00}, // Yellow for 70 and up
+    {90.0f, 0xFFFF0000}  // Red for 90 and up
 };
 
 // for check Adafruit GFX assets compatible
@@ -197,5 +166,3 @@ static const unsigned char adaf_logo_bmp[] = {
 	0b00000000,0b00000000,0b00001111,0b00000000,0b01111111,0b11111111,0b11111111,0b11111111,0b11111110,0b10100101,0b10101101,0b10011101,0b10001101,0b00011001,0b11100000,
 	0b00000000,0b00000000,0b00000110,0b00000000,0b01111111,0b11111111,0b11111111,0b11111111,0b11111110,0b10110101,0b10101101,0b11101101,0b10110101,0b01111110,0b11100000,
 };
-
-#endif // APP_H

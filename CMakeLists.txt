@@ -6,7 +6,7 @@ project(mfoes02w
 )
 
 #  Standards 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(BUILD_SHARED_LIBS ON)
@@ -16,11 +16,15 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-#  Options 
+#  Options
 option(STATIC_LINK    "Link statically (required for Alpine musl)" ON)
-option(ENABLE_TESTS   "Build unit tests"                         OFF)
-option(ENABLE_LOGGING "Enable debug logging"                     OFF)
-option(DESKTOP_BUILD  "Build for desktop with SDL graphics"       OFF)
+option(ENABLE_TESTS   "Build unit tests" OFF)
+option(ENABLE_LOGGING "Enable debug logging" OFF)
+option(DESKTOP_BUILD  "Build for desktop with SDL graphics" OFF)
+# GFX_DRM_SUPPORT: use kernel DRM/KMS dumb-buffer page-flip instead of /dev/fb0.
+# Requires vc4-kms-v3d overlay in config.txt and /dev/dri/card0 on the Pi.
+# No Mesa/libdrm runtime dep — uses raw Linux kernel ioctls only.
+option(GFX_DRM_SUPPORT "GFX: DRM/KMS backend (raw kernel, no Mesa)" OFF)
 
 #  Static linking for musl 
 if(STATIC_LINK)
@@ -43,6 +47,10 @@ add_compile_options(
     -fdata-sections
 )
 
+if(NOT DESKTOP_BUILD)
+    add_compile_options(-march=armv8-a+simd)
+endif()
+
 # Strip dead code on release
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_link_options(-Wl,--gc-sections -s)
@@ -57,13 +65,24 @@ if(DESKTOP_BUILD)
     message(STATUS "Desktop build ENABLED with SDL graphics")
 endif()
 
+# Forward GFX_DRM_SUPPORT into the libgfx sub-project.
+# Mutually exclusive with DESKTOP_BUILD.
+if(GFX_DRM_SUPPORT AND NOT DESKTOP_BUILD)
+    set(GFX_DRM_SUPPORT ON CACHE BOOL "" FORCE)
+    message(STATUS "GFX DRM/KMS backend ENABLED")
+elseif(GFX_DRM_SUPPORT AND DESKTOP_BUILD)
+    message(WARNING "GFX_DRM_SUPPORT ignored — DESKTOP_BUILD takes priority")
+    set(GFX_DRM_SUPPORT OFF CACHE BOOL "" FORCE)
+endif()
+
 
 # --------------library--------------------
 
 add_subdirectory(libs/libgfx)
 add_subdirectory(libs/hwinterface)
 add_subdirectory(libs/uisys)
-
+add_subdirectory(libs/linfo)
+add_subdirectory(libs/UIDisplayWidgets)
 
 #  Subdirectories 
 add_executable(mfoes02w
@@ -86,7 +105,9 @@ target_link_libraries(mfoes02w
         libgfx
         pthread
         hwinterface 
-        uisys 
+        uisys
+        linfo
+        UIDisplayWidgets
 )
 
 if(NOT DESKTOP_BUILD)
@@ -147,5 +168,6 @@ message(STATUS "  Static link   : ${STATIC_LINK}")
 message(STATUS "  Tests         : ${ENABLE_TESTS}")
 message(STATUS "  Logging       : ${ENABLE_LOGGING}")
 message(STATUS "  Desktop build : ${DESKTOP_BUILD}")
+message(STATUS "  DRM backend   : ${GFX_DRM_SUPPORT}")
 message(STATUS "======================================")
 message(STATUS "")

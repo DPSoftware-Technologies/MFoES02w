@@ -167,6 +167,8 @@ void ButtonWidget::update(uint32_t nowMs) {
         _swipeFired = true;
         fire(ButtonState::SWIPE_DONE);
     }
+
+    
 }
 
 } // namespace uisys
