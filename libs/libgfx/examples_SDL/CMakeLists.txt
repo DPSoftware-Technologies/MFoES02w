@@ -15,9 +15,9 @@ set(EXAMPLES
 
 foreach(EXAMPLE ${EXAMPLES})
     add_executable(${EXAMPLE} ${EXAMPLE}.cpp)
-    
+
     target_link_libraries(${EXAMPLE} PRIVATE libgfx)
-    
+
     # Only keep this if libgfx doesn't export its own headers
     target_include_directories(${EXAMPLE} PRIVATE ${LIBGFX_DIR})
 endforeach()

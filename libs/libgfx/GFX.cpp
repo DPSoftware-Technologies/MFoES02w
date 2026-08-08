@@ -15,10 +15,12 @@
 #include <algorithm>
 #include <vector>
 
-#include <unistd.h>
-#include <sys/ioctl.h>
-#include <sys/mman.h>
-#include <poll.h>
+#ifndef _WIN32
+#  include <unistd.h>
+#  include <sys/ioctl.h>
+#  include <sys/mman.h>
+#  include <poll.h>
+#endif
 
 #ifdef GFXSDL
 #include <SDL2/SDL.h>
@@ -92,7 +94,9 @@ struct drm_event_vblank     {
 #define DRM_EVENT_FLIP_COMPLETE      0x02u
 // ---- end DRM UAPI -----------------------------------------------------------
 #else
-#include <linux/fb.h>
+#  ifndef _WIN32
+#  include <linux/fb.h>
+#  endif
 #endif
 
 #ifdef GFXSDL
@@ -112,6 +116,7 @@ LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
       m_inverted(false), m_inTransaction(false),
       m_pFont(nullptr), m_fontSizeMultiplied(true)
 {
+    SDL_SetMainReady(); // companion to SDL_MAIN_HANDLED defined in GFX.h
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         fprintf(stderr, "GFX: SDL_Init failed: %s\n", SDL_GetError());
         return;
@@ -167,7 +172,10 @@ LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
     m_pBuffer = m_pSurfaceBuffer;
     m_pitch = (uint32_t)width * sizeof(uint32_t);  
     _initializeMultiBuffer();  // Initialize buffer array to nullptrs (multi-buffer disabled for SDL)
-    fprintf(stderr, "GFX: SDL window %s OK (%dx%d @ 32bpp ARGB8888)\n", title, width, height);
+    SDL_RenderClear(m_pRenderer);
+	SDL_RenderCopy(m_pRenderer, m_pTexture, NULL, NULL);
+	SDL_RenderPresent(m_pRenderer); // <--- RTSS intercepts this call!
+	fprintf(stderr, "GFX: SDL window %s OK (%dx%d @ 32bpp ARGB8888)\n", title, width, height);
 }
 
 #elif !defined(GFX_USE_DRM)
@@ -440,11 +448,20 @@ void LinuxGFX::stop() {
     }
     close(m_drmFd); m_drmFd = -1;
 #elif defined(GFXSDL)
-    if (m_pTexture) SDL_DestroyTexture(m_pTexture);
-    if (m_pRenderer) SDL_DestroyRenderer(m_pRenderer);
-    if (m_pWindow) SDL_DestroyWindow(m_pWindow);
-    if (m_pSurfaceBuffer) free(m_pSurfaceBuffer);
-    SDL_Quit();
+    // Only the object that created a window owns the SDL backend. A GFXcanvas has
+    // m_pWindow == nullptr and must not destroy resources or call SDL_Quit()
+    // (which would tear SDL down while a real window is still alive).
+    if (m_pWindow) {
+        if (m_pTexture) SDL_DestroyTexture(m_pTexture);
+        if (m_pRenderer) SDL_DestroyRenderer(m_pRenderer);
+        SDL_DestroyWindow(m_pWindow);
+        if (m_pSurfaceBuffer) free(m_pSurfaceBuffer);
+        m_pTexture = nullptr;
+        m_pRenderer = nullptr;
+        m_pWindow = nullptr;
+        m_pSurfaceBuffer = nullptr;
+        SDL_Quit();
+    }
 #else
     if (m_pFbMem && m_pFbMem != MAP_FAILED) munmap(m_pFbMem, m_fbMemSize);
     if (m_fbFd >= 0) close(m_fbFd);
@@ -763,9 +780,42 @@ void LinuxGFX::writeLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint32_
     }
 }
 
-void LinuxGFX::drawFastVLine(int16_t x, int16_t y, int16_t h, uint32_t c) { startWrite(); writeFastVLine(x,y,h,c); endWrite(); }
-void LinuxGFX::drawFastHLine(int16_t x, int16_t y, int16_t w, uint32_t c) { startWrite(); writeFastHLine(x,y,w,c); endWrite(); }
-void LinuxGFX::drawLine(int16_t x0,int16_t y0,int16_t x1,int16_t y1,uint32_t c) { startWrite(); writeLine(x0,y0,x1,y1,c); endWrite(); }
+void LinuxGFX::drawFastVLine(int16_t x, int16_t y, int16_t h, uint32_t c) {
+    startWrite();
+    uint8_t sw = m_drawStyle.strokeWidth;
+    if (sw > 1) {
+        int16_t half = (int16_t)(sw / 2);
+        writeFillRect((int16_t)(x - half), y, (int16_t)sw, h, c);
+    } else {
+        writeFastVLine(x, y, h, c);
+    }
+    endWrite();
+}
+
+void LinuxGFX::drawFastHLine(int16_t x, int16_t y, int16_t w, uint32_t c) {
+    startWrite();
+    uint8_t sw = m_drawStyle.strokeWidth;
+    if (sw > 1) {
+        int16_t half = (int16_t)(sw / 2);
+        writeFillRect(x, (int16_t)(y - half), w, (int16_t)sw, c);
+    } else {
+        writeFastHLine(x, y, w, c);
+    }
+    endWrite();
+}
+
+void LinuxGFX::drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint32_t c) {
+    startWrite();
+    uint8_t sw = m_drawStyle.strokeWidth;
+    if (sw > 1) {
+        writeThickLine(x0, y0, x1, y1, c, sw);
+    } else if (m_drawStyle.antiAlias) {
+        writeLineAA(x0, y0, x1, y1, c);
+    } else {
+        writeLine(x0, y0, x1, y1, c);
+    }
+    endWrite();
+}
 
 void LinuxGFX::drawRect(int16_t x, int16_t y, int16_t w, int16_t h, uint32_t c) {
     drawFastHLine(x, y,       w, c); drawFastHLine(x, y + h - 1, w, c);
@@ -809,16 +859,23 @@ void LinuxGFX::fillCircleHelper(int16_t x0, int16_t y0, int16_t r,
 
 void LinuxGFX::drawCircle(int16_t x0, int16_t y0, int16_t r, uint32_t color) {
     startWrite();
-    int16_t f = 1-r, ddx = 1, ddy = -2*r, x = 0, y = r;
-    writePixel(x0,y0+r,color); writePixel(x0,y0-r,color);
-    writePixel(x0+r,y0,color); writePixel(x0-r,y0,color);
-    while (x < y) {
-        if (f >= 0) { y--; ddy += 2; f += ddy; }
-        x++; ddx += 2; f += ddx;
-        writePixel(x0+x,y0+y,color); writePixel(x0-x,y0+y,color);
-        writePixel(x0+x,y0-y,color); writePixel(x0-x,y0-y,color);
-        writePixel(x0+y,y0+x,color); writePixel(x0-y,y0+x,color);
-        writePixel(x0+y,y0-x,color); writePixel(x0-y,y0-x,color);
+    uint8_t sw = m_drawStyle.strokeWidth;
+    if (sw > 1) {
+        writeThickCircle(x0, y0, r, color, sw);
+    } else if (m_drawStyle.antiAlias) {
+        writeCircleAA(x0, y0, r, color);
+    } else {
+        int16_t f = 1-r, ddx = 1, ddy = -2*r, x = 0, y = r;
+        writePixel(x0,y0+r,color); writePixel(x0,y0-r,color);
+        writePixel(x0+r,y0,color); writePixel(x0-r,y0,color);
+        while (x < y) {
+            if (f >= 0) { y--; ddy += 2; f += ddy; }
+            x++; ddx += 2; f += ddx;
+            writePixel(x0+x,y0+y,color); writePixel(x0-x,y0+y,color);
+            writePixel(x0+x,y0-y,color); writePixel(x0-x,y0-y,color);
+            writePixel(x0+y,y0+x,color); writePixel(x0-y,y0+x,color);
+            writePixel(x0+y,y0-x,color); writePixel(x0-y,y0-x,color);
+        }
     }
     endWrite();
 }
@@ -830,19 +887,88 @@ void LinuxGFX::fillCircle(int16_t x0, int16_t y0, int16_t r, uint32_t color) {
     endWrite();
 }
 
+// Arcs
+// Angle convention: degrees, 0 = +x (east); increasing angle sweeps clockwise
+// (screen y points down). See drawArc() doc comment in GFX.h.
+void LinuxGFX::drawArc(int16_t x0, int16_t y0, int16_t r,
+                        float startAngle, float endAngle, uint32_t color) {
+    if (r < 0) return;
+    float rawSweep = endAngle - startAngle;
+    if (fabsf(rawSweep) < 1e-4f) return;          // degenerate span → nothing
+    float sweep = fmodf(rawSweep, 360.0f);
+    if (sweep <= 0.0f) sweep += 360.0f;           // normalize to (0, 360]
+
+    startWrite();
+    uint8_t sw = m_drawStyle.strokeWidth;
+    if (sw > 1) {
+        writeArcThick(x0, y0, r, startAngle, sweep, color, sw);
+    } else if (m_drawStyle.antiAlias) {
+        writeArcAA(x0, y0, r, startAngle, sweep, color);
+    } else if (r == 0) {
+        writePixel(x0, y0, color);
+    } else {
+        // Crisp single-pixel outline: midpoint circle points, angle-gated.
+        const float R2D  = 57.29577951308232f;
+        const float eps  = 0.5f * R2D / (float)r;  // ~half-pixel, in degrees
+        const bool  full = (sweep >= 359.9999f);
+        const float endN = startAngle + sweep;
+        auto wrap180 = [](float a) -> float {
+            float t = fmodf(a + 180.0f, 360.0f);
+            if (t < 0.0f) t += 360.0f;
+            return t - 180.0f;
+        };
+        auto plot = [&](int16_t px, int16_t py) {
+            if (!full) {
+                float pa = atan2f((float)(py - y0), (float)(px - x0)) * R2D;
+                if (wrap180(pa - startAngle) < -eps) return;
+                if (wrap180(endN - pa)       < -eps) return;
+            }
+            writePixel(px, py, color);
+        };
+        int16_t f = 1 - r, ddx = 1, ddy = -2 * r, x = 0, y = r;
+        plot(x0, y0 + r); plot(x0, y0 - r);
+        plot(x0 + r, y0); plot(x0 - r, y0);
+        while (x < y) {
+            if (f >= 0) { y--; ddy += 2; f += ddy; }
+            x++; ddx += 2; f += ddx;
+            plot(x0 + x, y0 + y); plot(x0 - x, y0 + y);
+            plot(x0 + x, y0 - y); plot(x0 - x, y0 - y);
+            plot(x0 + y, y0 + x); plot(x0 - y, y0 + x);
+            plot(x0 + y, y0 - x); plot(x0 - y, y0 - x);
+        }
+    }
+    endWrite();
+}
+
 // Rounded rectangles
 void LinuxGFX::drawRoundRect(int16_t x, int16_t y, int16_t w, int16_t h,
                                int16_t r, uint32_t color) {
     startWrite();
-    int16_t mx = ((w<h)?w:h)/2; if(r>mx) r=mx;
-    writeFastHLine(x+r, y,       w-2*r, color);
-    writeFastHLine(x+r, y+h-1,   w-2*r, color);
-    writeFastVLine(x,     y+r,   h-2*r, color);
-    writeFastVLine(x+w-1, y+r,   h-2*r, color);
-    drawCircleHelper(x+r,     y+r,     r, 1, color);
-    drawCircleHelper(x+w-r-1, y+r,     r, 2, color);
-    drawCircleHelper(x+w-r-1, y+h-r-1, r, 4, color);
-    drawCircleHelper(x+r,     y+h-r-1, r, 8, color);
+    int16_t mx = ((w<h)?w:h)/2; if (r > mx) r = mx;
+    uint8_t sw = m_drawStyle.strokeWidth;
+
+    if (sw <= 1) {
+        writeFastHLine(x+r,   y,       w-2*r, color);
+        writeFastHLine(x+r,   y+h-1,   w-2*r, color);
+        writeFastVLine(x,     y+r,     h-2*r, color);
+        writeFastVLine(x+w-1, y+r,     h-2*r, color);
+        drawCircleHelper(x+r,     y+r,     r, 1, color);
+        drawCircleHelper(x+w-r-1, y+r,     r, 2, color);
+        drawCircleHelper(x+w-r-1, y+h-r-1, r, 4, color);
+        drawCircleHelper(x+r,     y+h-r-1, r, 8, color);
+    } else {
+        int16_t half = (int16_t)(sw / 2);
+        // Straight sides — thick filled rectangles
+        writeFillRect((int16_t)(x+r),     (int16_t)(y     - half), (int16_t)(w-2*r), (int16_t)sw, color);
+        writeFillRect((int16_t)(x+r),     (int16_t)(y+h-1 - half), (int16_t)(w-2*r), (int16_t)sw, color);
+        writeFillRect((int16_t)(x     - half), (int16_t)(y+r), (int16_t)sw, (int16_t)(h-2*r), color);
+        writeFillRect((int16_t)(x+w-1 - half), (int16_t)(y+r), (int16_t)sw, (int16_t)(h-2*r), color);
+        // Corner arcs — thick quadrant rings
+        writeThickArc(x+r,     y+r,     r, 0x1, color, sw);
+        writeThickArc(x+w-r-1, y+r,     r, 0x2, color, sw);
+        writeThickArc(x+w-r-1, y+h-r-1, r, 0x4, color, sw);
+        writeThickArc(x+r,     y+h-r-1, r, 0x8, color, sw);
+    }
     endWrite();
 }
 
@@ -880,11 +1006,16 @@ void LinuxGFX::fillTriangle(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
         if (a>b) std::swap(a,b);
         writeFastHLine(a,y,b-a+1,color);
     }
-    sa=0; sb=(int32_t)dx02*(y1-y0);
-    for (int16_t y=y1;y<=y2;y++) {
-        int16_t a=x1+sa/dy12,b=x0+sb/dy02; sa+=dx12; sb+=dx02;
-        if (a>b) std::swap(a,b);
-        writeFastHLine(a,y,b-a+1,color);
+    // Lower half. Skip entirely for a flat-bottom triangle (y1==y2): dy12 would
+    // be 0 (division by zero) and the upper-half loop above, run with last=y1,
+    // has already filled the y1 scanline.
+    if (dy12 != 0) {
+        sa=0; sb=(int32_t)dx02*(y1-y0);
+        for (int16_t y=y1;y<=y2;y++) {
+            int16_t a=x1+sa/dy12,b=x0+sb/dy02; sa+=dx12; sb+=dx02;
+            if (a>b) std::swap(a,b);
+            writeFastHLine(a,y,b-a+1,color);
+        }
     }
     endWrite();
 }
@@ -1005,6 +1136,85 @@ void LinuxGFX::drawRGB565Bitmap(int16_t x, int16_t y, const uint16_t *bitmap, in
             dst[i] = 0xFF000000u | ((uint32_t)r<<16) | ((uint32_t)g<<8) | b;
         }
     }
+}
+
+void LinuxGFX::drawBitmapTriangle(
+        int16_t x0, int16_t y0, int16_t x1, int16_t y1,
+        int16_t x2, int16_t y2,
+        const uint32_t *bitmap, int16_t texW, int16_t texH) {
+    if (!bitmap || texW <= 0 || texH <= 0) return;
+
+    // UV: p0→(0,0), p1→(texW-1,0), p2→(0,texH-1)
+    float u0=0, v0=0, u1=(float)(texW-1), v1=0, u2=0, v2=(float)(texH-1);
+
+    if (y0>y1){std::swap(y0,y1);std::swap(x0,x1);std::swap(u0,u1);std::swap(v0,v1);}
+    if (y1>y2){std::swap(y1,y2);std::swap(x1,x2);std::swap(u1,u2);std::swap(v1,v2);}
+    if (y0>y1){std::swap(y0,y1);std::swap(x0,x1);std::swap(u0,u1);std::swap(v0,v1);}
+    if (y0==y2) return;
+
+    float dy02=(float)(y2-y0);
+    startWrite();
+
+    // Top half: y0..y1 — long edge (0→2) and short-top edge (0→1)
+    if (y1 > y0) {
+        float dy01=(float)(y1-y0);
+        float dxA=(x2-x0)/dy02, duA=(u2-u0)/dy02, dvA=(v2-v0)/dy02;
+        float dxB=(x1-x0)/dy01, duB=(u1-u0)/dy01, dvB=(v1-v0)/dy01;
+        float xA=(float)x0, xB=(float)x0;
+        float uA=u0, uB=u0, vA=v0, vB=v0;
+        for (int16_t y=y0; y<=y1; y++) {
+            int16_t xa=(int16_t)xA, xb=(int16_t)xB;
+            float ua=uA, ub=uB, va=vA, vb=vB;
+            if (xa>xb){std::swap(xa,xb);std::swap(ua,ub);std::swap(va,vb);}
+            float span=(float)(xb-xa);
+            for (int16_t x=xa; x<=xb; x++) {
+                float t=(span>0.0f)?(float)(x-xa)/span:0.0f;
+                int tx=(int)(ua+t*(ub-ua)+0.5f);
+                int ty=(int)(va+t*(vb-va)+0.5f);
+                if (tx<0)tx=0; if(tx>=texW)tx=texW-1;
+                if (ty<0)ty=0; if(ty>=texH)ty=texH-1;
+                writePixel(x,y,bitmap[(int32_t)ty*texW+tx]);
+            }
+            xA+=dxA; uA+=duA; vA+=dvA;
+            xB+=dxB; uB+=duB; vB+=dvB;
+        }
+    }
+
+    // Bottom half: y1..y2 — long edge (0→2) and short-bottom edge (1→2)
+    if (y2 > y1) {
+        float dy12=(float)(y2-y1);
+        float dxA=(x2-x0)/dy02, duA=(u2-u0)/dy02, dvA=(v2-v0)/dy02;
+        float dxB=(x2-x1)/dy12, duB=(u2-u1)/dy12, dvB=(v2-v1)/dy12;
+        float t01=(float)(y1-y0)/dy02;
+        float xA=(float)x0+t01*(x2-x0);
+        float uA=u0+t01*(u2-u0), vA=v0+t01*(v2-v0);
+        float xB=(float)x1, uB=u1, vB=v1;
+        for (int16_t y=y1; y<=y2; y++) {
+            int16_t xa=(int16_t)xA, xb=(int16_t)xB;
+            float ua=uA, ub=uB, va=vA, vb=vB;
+            if (xa>xb){std::swap(xa,xb);std::swap(ua,ub);std::swap(va,vb);}
+            float span=(float)(xb-xa);
+            for (int16_t x=xa; x<=xb; x++) {
+                float t=(span>0.0f)?(float)(x-xa)/span:0.0f;
+                int tx=(int)(ua+t*(ub-ua)+0.5f);
+                int ty=(int)(va+t*(vb-va)+0.5f);
+                if (tx<0)tx=0; if(tx>=texW)tx=texW-1;
+                if (ty<0)ty=0; if(ty>=texH)ty=texH-1;
+                writePixel(x,y,bitmap[(int32_t)ty*texW+tx]);
+            }
+            xA+=dxA; uA+=duA; vA+=dvA;
+            xB+=dxB; uB+=duB; vB+=dvB;
+        }
+    }
+
+    endWrite();
+}
+
+void LinuxGFX::drawBitmapTriangle(
+        int16_t x0, int16_t y0, int16_t x1, int16_t y1,
+        int16_t x2, int16_t y2,
+        uint32_t *bitmap, int16_t texW, int16_t texH) {
+    drawBitmapTriangle(x0,y0,x1,y1,x2,y2,(const uint32_t*)bitmap,texW,texH);
 }
 
 //  Default 5×8 font
@@ -1286,6 +1496,342 @@ uint32_t LinuxGFX::fromRGB565(uint16_t c) {
 }
 
 // =============================================================================
+//  Draw style API
+// =============================================================================
+
+void LinuxGFX::setDrawStyle  (const GFXDrawStyle &s) { m_drawStyle = s; }
+const GFXDrawStyle &LinuxGFX::getDrawStyle()   const { return m_drawStyle; }
+void LinuxGFX::setStrokeWidth(uint8_t w)             { m_drawStyle.strokeWidth = w; }
+void LinuxGFX::setLineCap    (GFXLineCap c)          { m_drawStyle.lineCap     = c; }
+void LinuxGFX::setLineJoin   (GFXLineJoin j)         { m_drawStyle.lineJoin    = j; }
+void LinuxGFX::setAntiAlias  (bool e)                { m_drawStyle.antiAlias   = e; }
+
+// =============================================================================
+//  Styled rendering helpers
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// writeLineAA — Xiaolin Wu anti-aliased line (strokeWidth == 1).
+// Alpha of the supplied color is treated as 100 % coverage; fractional coverage
+// is applied on top of it so semi-transparent AA lines work correctly.
+// -----------------------------------------------------------------------------
+void LinuxGFX::writeLineAA(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint32_t color) {
+    uint32_t baseAlpha = (color >> 24) & 0xFF;
+    uint32_t rgb       = color & 0x00FFFFFFu;
+
+    // plot helper: write a pixel with fractional brightness applied to alpha
+    auto plot = [&](int x, int y, float brightness) {
+        if (x < 0 || x >= m_width || y < 0 || y >= m_height) return;
+        uint32_t a = (uint32_t)(baseAlpha * brightness + 0.5f);
+        if (a == 0) return;
+        writePixel((int16_t)x, (int16_t)y, rgb | (a << 24));
+    };
+
+    bool steep = std::abs(y1 - y0) > std::abs(x1 - x0);
+    if (steep)  { std::swap(x0, y0); std::swap(x1, y1); }
+    if (x0 > x1){ std::swap(x0, x1); std::swap(y0, y1); }
+
+    float dx       = (float)(x1 - x0);
+    float dy       = (float)(y1 - y0);
+    float gradient = (dx == 0.0f) ? 1.0f : dy / dx;
+
+    // --- first endpoint ---
+    float xend  = (float)(int)(x0 + 0.5f);
+    float yend  = y0 + gradient * (xend - x0);
+    float xgap  = 1.0f - ((x0 + 0.5f) - floorf(x0 + 0.5f));
+    int   xpx1  = (int)xend;
+    int   ypx1  = (int)floorf(yend);
+    float fp1   = yend - floorf(yend);
+    if (steep) { plot(ypx1,   xpx1, (1.0f - fp1) * xgap);
+                 plot(ypx1+1, xpx1, fp1 * xgap); }
+    else       { plot(xpx1,   ypx1, (1.0f - fp1) * xgap);
+                 plot(xpx1, ypx1+1, fp1 * xgap); }
+    float intery = yend + gradient;
+
+    // --- second endpoint ---
+    xend = (float)(int)(x1 + 0.5f);
+    yend = y1 + gradient * (xend - x1);
+    xgap = (x1 + 0.5f) - floorf(x1 + 0.5f);
+    int xpx2 = (int)xend;
+    int ypx2 = (int)floorf(yend);
+    float fp2 = yend - floorf(yend);
+    if (steep) { plot(ypx2,   xpx2, (1.0f - fp2) * xgap);
+                 plot(ypx2+1, xpx2, fp2 * xgap); }
+    else       { plot(xpx2,   ypx2, (1.0f - fp2) * xgap);
+                 plot(xpx2, ypx2+1, fp2 * xgap); }
+
+    // --- inner span ---
+    if (steep) {
+        for (int x = xpx1 + 1; x < xpx2; ++x) {
+            float frac = intery - floorf(intery);
+            plot((int)floorf(intery),   x, 1.0f - frac);
+            plot((int)floorf(intery)+1, x, frac);
+            intery += gradient;
+        }
+    } else {
+        for (int x = xpx1 + 1; x < xpx2; ++x) {
+            float frac = intery - floorf(intery);
+            plot(x, (int)floorf(intery),   1.0f - frac);
+            plot(x, (int)floorf(intery)+1, frac);
+            intery += gradient;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// writeThickLine — filled parallelogram + optional end caps.
+// -----------------------------------------------------------------------------
+void LinuxGFX::writeThickLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
+                               uint32_t color, uint8_t width) {
+    if (width <= 1) { writeLine(x0, y0, x1, y1, color); return; }
+
+    float fdx = (float)(x1 - x0);
+    float fdy = (float)(y1 - y0);
+    float len = sqrtf(fdx*fdx + fdy*fdy);
+
+    if (len < 1.0f) {
+        int16_t r = (int16_t)(width / 2);
+        if (m_drawStyle.lineCap == GFXLineCap::Round)
+            fillCircle(x0, y0, r, color);
+        else
+            writeFillRect((int16_t)(x0 - r), (int16_t)(y0 - r), (int16_t)width, (int16_t)width, color);
+        return;
+    }
+
+    // Perpendicular half-width offsets
+    float px = -fdy / len * (float)width * 0.5f;
+    float py =  fdx / len * (float)width * 0.5f;
+
+    // Endpoint offsets for Square cap
+    float ex0 = (float)x0, ey0 = (float)y0;
+    float ex1 = (float)x1, ey1 = (float)y1;
+    if (m_drawStyle.lineCap == GFXLineCap::Square) {
+        float ndx = fdx / len * (float)width * 0.5f;
+        float ndy = fdy / len * (float)width * 0.5f;
+        ex0 -= ndx; ey0 -= ndy;
+        ex1 += ndx; ey1 += ndy;
+    }
+
+    // 4 corners of the stroke parallelogram
+    int16_t ax = (int16_t)(ex0 - px), ay = (int16_t)(ey0 - py);
+    int16_t bx = (int16_t)(ex0 + px), by = (int16_t)(ey0 + py);
+    int16_t cx = (int16_t)(ex1 + px), cy = (int16_t)(ey1 + py);
+    int16_t ddx = (int16_t)(ex1 - px), ddy2 = (int16_t)(ey1 - py);
+
+    fillTriangle(ax, ay, bx, by, cx, cy, color);
+    fillTriangle(ax, ay, cx, cy, ddx, ddy2, color);
+
+    if (m_drawStyle.lineCap == GFXLineCap::Round) {
+        fillCircle(x0, y0, (int16_t)(width / 2), color);
+        fillCircle(x1, y1, (int16_t)(width / 2), color);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// writeCircleAA — 1-pixel-wide anti-aliased circle outline.
+// Only the ±1 pixel band around the ideal radius is scanned.
+// -----------------------------------------------------------------------------
+void LinuxGFX::writeCircleAA(int16_t x0, int16_t y0, int16_t r, uint32_t color) {
+    uint32_t baseAlpha = (color >> 24) & 0xFF;
+    uint32_t rgb       = color & 0x00FFFFFFu;
+    float    fr        = (float)r;
+
+    for (int16_t dy = (int16_t)(-(r + 1)); dy <= (int16_t)(r + 1); ++dy) {
+        float dy2    = (float)dy * (float)dy;
+        float outer2 = (fr + 1.0f) * (fr + 1.0f) - dy2;
+        float inner2 = (fr - 1.0f) * (fr - 1.0f) - dy2;
+        if (outer2 < 0.0f) continue;
+        int ox = (int)sqrtf(outer2);
+        int ix = (inner2 > 0.0f) ? (int)sqrtf(inner2) : 0;
+        for (int dx = ix; dx <= ox; ++dx) {
+            float dist    = sqrtf((float)(dx * dx) + dy2) - fr;
+            float alpha_f = 1.0f - fabsf(dist);
+            if (alpha_f <= 0.0f) continue;
+            uint32_t a = (uint32_t)(baseAlpha * alpha_f + 0.5f);
+            if (a == 0) continue;
+            uint32_t c = rgb | (a << 24);
+            writePixel((int16_t)(x0 + dx), (int16_t)(y0 + dy), c);
+            if (dx > 0)
+                writePixel((int16_t)(x0 - dx), (int16_t)(y0 + dy), c);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// writeThickCircle — fills the annular ring from r-w/2 to r+w/2.
+// -----------------------------------------------------------------------------
+void LinuxGFX::writeThickCircle(int16_t x0, int16_t y0, int16_t r,
+                                 uint32_t color, uint8_t w) {
+    int16_t r_outer = (int16_t)(r + (int16_t)(w / 2));
+    int16_t r_inner = (int16_t)(r - (int16_t)((w + 1) / 2));
+    if (r_inner < 0) r_inner = 0;
+
+    int32_t ro2 = (int32_t)r_outer * r_outer;
+    int32_t ri2 = (int32_t)r_inner * r_inner;
+
+    for (int16_t dy = -r_outer; dy <= r_outer; ++dy) {
+        int32_t dy2 = (int32_t)dy * dy;
+        if (dy2 > ro2) continue;
+
+        int16_t ox = (int16_t)sqrtf((float)(ro2 - dy2));
+
+        if (dy2 < ri2) {
+            // Ring: two bands, excluding the hollow interior
+            int16_t ix  = (int16_t)(sqrtf((float)(ri2 - dy2)) + 0.5f);
+            int16_t len = (int16_t)(ox - ix + 1);
+            if (len > 0) {
+                writeFastHLine((int16_t)(x0 - ox), (int16_t)(y0 + dy), len, color);
+                writeFastHLine((int16_t)(x0 + ix), (int16_t)(y0 + dy), len, color);
+            }
+        } else {
+            // Full span — we're at the top/bottom dome of the ring
+            writeFastHLine((int16_t)(x0 - ox), (int16_t)(y0 + dy), (int16_t)(2 * ox + 1), color);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// writeThickArc — thick arc restricted to selected quadrants.
+// cornermask: 0x1=top-left  0x2=top-right  0x4=bottom-right  0x8=bottom-left
+// Used internally by drawRoundRect for thick-stroked corners.
+// -----------------------------------------------------------------------------
+void LinuxGFX::writeThickArc(int16_t x0, int16_t y0, int16_t r, uint8_t cornermask,
+                              uint32_t color, uint8_t w) {
+    int16_t r_outer = (int16_t)(r + (int16_t)(w / 2));
+    int16_t r_inner = (int16_t)(r - (int16_t)((w + 1) / 2));
+    if (r_inner < 0) r_inner = 0;
+
+    int32_t ro2 = (int32_t)r_outer * r_outer;
+    int32_t ri2 = (int32_t)r_inner * r_inner;
+
+    for (int16_t dy = -r_outer; dy <= r_outer; ++dy) {
+        // Determine which horizontal sides are needed for this row
+        bool draw_left, draw_right;
+        if (dy < 0) {
+            draw_left  = (cornermask & 0x1) != 0; // top-left
+            draw_right = (cornermask & 0x2) != 0; // top-right
+        } else if (dy > 0) {
+            draw_left  = (cornermask & 0x8) != 0; // bottom-left
+            draw_right = (cornermask & 0x4) != 0; // bottom-right
+        } else {
+            // dy == 0: boundary row shared by upper/lower corners
+            draw_left  = (cornermask & (0x1u | 0x8u)) != 0;
+            draw_right = (cornermask & (0x2u | 0x4u)) != 0;
+        }
+        if (!draw_left && !draw_right) continue;
+
+        int32_t dy2 = (int32_t)dy * dy;
+        if (dy2 > ro2) continue;
+
+        int16_t ox = (int16_t)sqrtf((float)(ro2 - dy2));
+
+        if (dy2 < ri2) {
+            int16_t ix  = (int16_t)(sqrtf((float)(ri2 - dy2)) + 0.5f);
+            int16_t len = (int16_t)(ox - ix + 1);
+            if (len > 0) {
+                if (draw_left)  writeFastHLine((int16_t)(x0 - ox), (int16_t)(y0 + dy), len, color);
+                if (draw_right) writeFastHLine((int16_t)(x0 + ix), (int16_t)(y0 + dy), len, color);
+            }
+        } else {
+            int16_t span = (int16_t)(ox + 1);
+            if (draw_left)  writeFastHLine((int16_t)(x0 - ox), (int16_t)(y0 + dy), span, color);
+            if (draw_right) writeFastHLine(x0,                 (int16_t)(y0 + dy), span, color);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// writeArcThick — thick arc outline over an arbitrary angular span.
+// Scans the bounding box, keeping pixels inside the radial band
+// [r_inner, r_outer] AND inside the clockwise span [startAngle, startAngle+sweep].
+// -----------------------------------------------------------------------------
+void LinuxGFX::writeArcThick(int16_t x0, int16_t y0, int16_t r,
+                              float startAngle, float sweep,
+                              uint32_t color, uint8_t w) {
+    int16_t r_outer = (int16_t)(r + (int16_t)(w / 2));
+    int16_t r_inner = (int16_t)(r - (int16_t)((w + 1) / 2));
+    if (r_inner < 0) r_inner = 0;
+
+    int32_t ro2 = (int32_t)r_outer * r_outer;
+    int32_t ri2 = (int32_t)r_inner * r_inner;
+
+    const float R2D  = 57.29577951308232f;
+    const bool  full = (sweep >= 359.9999f);
+    const float endN = startAngle + sweep;
+    auto wrap180 = [](float a) -> float {
+        float t = fmodf(a + 180.0f, 360.0f);
+        if (t < 0.0f) t += 360.0f;
+        return t - 180.0f;
+    };
+
+    for (int16_t dy = -r_outer; dy <= r_outer; ++dy) {
+        int32_t dy2 = (int32_t)dy * dy;
+        if (dy2 > ro2) continue;
+        for (int16_t dx = -r_outer; dx <= r_outer; ++dx) {
+            int32_t d2 = (int32_t)dx * dx + dy2;
+            if (d2 > ro2 || d2 < ri2) continue;
+            if (!full) {
+                float pa = atan2f((float)dy, (float)dx) * R2D;
+                if (wrap180(pa - startAngle) < 0.0f) continue;
+                if (wrap180(endN - pa)       < 0.0f) continue;
+            }
+            writePixel((int16_t)(x0 + dx), (int16_t)(y0 + dy), color);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// writeArcAA — anti-aliased 1-pixel arc outline.
+// Coverage combines a radial distance-field (|d - r|) with tangential feathering
+// at the two angular endpoints, so the end caps are smoothed as well.
+// -----------------------------------------------------------------------------
+void LinuxGFX::writeArcAA(int16_t x0, int16_t y0, int16_t r,
+                           float startAngle, float sweep, uint32_t color) {
+    uint32_t baseAlpha = (color >> 24) & 0xFF;
+    uint32_t rgb       = color & 0x00FFFFFFu;
+    float    fr        = (float)r;
+
+    const float R2D  = 57.29577951308232f;
+    const float D2R  = 0.01745329251994330f;
+    const bool  full = (sweep >= 359.9999f);
+    const float endN = startAngle + sweep;
+    auto wrap180 = [](float a) -> float {
+        float t = fmodf(a + 180.0f, 360.0f);
+        if (t < 0.0f) t += 360.0f;
+        return t - 180.0f;
+    };
+
+    for (int16_t dy = -(int16_t)(r + 1); dy <= (int16_t)(r + 1); ++dy) {
+        float dy2    = (float)dy * (float)dy;
+        float outer2 = (fr + 1.0f) * (fr + 1.0f) - dy2;
+        if (outer2 < 0.0f) continue;
+        int ox = (int)sqrtf(outer2);
+        for (int dx = -ox; dx <= ox; ++dx) {
+            float d         = sqrtf((float)dx * (float)dx + dy2);
+            float radialCov = 1.0f - fabsf(d - fr);   // width-1 band
+            if (radialCov <= 0.0f) continue;
+
+            float cov = radialCov;
+            if (!full) {
+                float pa        = atan2f((float)dy, (float)dx) * R2D;
+                float fromStart = wrap180(pa - startAngle);
+                float toEnd     = wrap180(endN - pa);
+                float edgeDeg   = (fromStart < toEnd) ? fromStart : toEnd;
+                // tangential distance (px) = edgeAngle(rad) * radius; feather ~1px.
+                float angCov    = edgeDeg * D2R * (d > 0.5f ? d : 0.5f) + 0.5f;
+                if (angCov <= 0.0f) continue;
+                if (angCov < cov) cov = angCov;
+            }
+            if (cov > 1.0f) cov = 1.0f;
+
+            uint32_t a = (uint32_t)(baseAlpha * cov + 0.5f);
+            if (a == 0) continue;
+            writePixel((int16_t)(x0 + dx), (int16_t)(y0 + dy), rgb | (a << 24));
+        }
+    }
+}
+
+// =============================================================================
 //  SDL Event Handling (SDL back-end only)
 // =============================================================================
 
@@ -1393,6 +1939,17 @@ LinuxGFX::LinuxGFX(CanvasTag) noexcept
     }
 #ifdef GFX_USE_DRM
     memset(m_drmBufs, 0, sizeof(m_drmBufs));
+#endif
+#ifdef GFXSDL
+    // A canvas owns no SDL backend. These MUST be null so ~LinuxGFX/stop() does
+    // not try to destroy/free garbage pointers when a GFXcanvas is destroyed.
+    m_pWindow        = nullptr;
+    m_pRenderer      = nullptr;
+    m_pTexture       = nullptr;
+    m_pSurfaceBuffer = nullptr;
+    m_mouseX         = 0;
+    m_mouseY         = 0;
+    m_shouldQuit     = false;
 #endif
 }
 

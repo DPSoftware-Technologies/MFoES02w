@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(mfoes02w
     VERSION 1.0.0
-    LANGUAGES CXX
+    LANGUAGES CXX C
 )
 
 #  Standards 
@@ -90,11 +90,7 @@ add_executable(mfoes02w
     src/usb_handling.cpp
     src/ui.cpp
     src/app.cpp
-)
-
-target_include_directories(mfoes02w
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
+    src/northbridge_link.cpp
 )
 
 # Link pthread statically if needed
@@ -111,6 +107,12 @@ target_link_libraries(mfoes02w
 )
 
 if(NOT DESKTOP_BUILD)
+	add_executable(cam_capture targetTools/cam_capture.c)
+
+    # Northbridge SPI link smoke test
+    add_executable(nb_link_test targetTools/nb_link_test.cpp)
+    target_link_libraries(nb_link_test PRIVATE hwinterface pthread)
+
     # OTA Daemon - Completely static, self-contained
     add_executable(otad
         services/otad.cpp

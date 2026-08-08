@@ -17,7 +17,7 @@
 //  All multi-byte fields are little-endian.
 //
 //  Packet layout:
-//    [1B magic 0xOA] [1B type] [4B payload_len] [payload] [1B checksum xor]
+//    [1B magic 0x0A] [1B type] [4B payload_len] [payload] [1B checksum xor]
 //
 //  OTA_BEGIN payload:
 //    [4B total_parts] [8B total_size] [16B md5_full_zip] [null-term version string ≤32B]
@@ -222,71 +222,101 @@ static bool wait_readable(UsbdClient& usbd) {
     return false;
 }
 
-// Receive one full OTA packet via UsbdClient's message-framed recv().
+// Buffered reader that reassembles the OTA byte-stream from usbd messages.
 //
-// IMPORTANT: UsbdClient::recv() is NOT a raw byte stream — it is a
-// length-prefixed message protocol. Each call to recv() reads one
-// complete message: it first reads a 4-byte little-endian length from
-// the socket, then reads exactly that many bytes. You must never call
-// recv() asking for partial data (e.g. "just the 6-byte header"), and
-// you must never call recv() multiple times to reassemble a single OTA
-// packet. The host Python tool sends each OTA packet as one usbd message,
-// so one recv() call delivers the entire packet — magic, type, length,
-// payload, and checksum — in one contiguous buffer.
+// UsbdClient::recv() is length-framed, but each message it delivers is ONE
+// MUBD USB frame's payload — NOT one OTA packet. usbd (and the host's
+// UsbChannel.send) split any transfer larger than the per-frame payload limit
+// (~512 KB) into several frames. With the default 1 MB chunk size an OTA_CHUNK
+// packet therefore arrives as several recv() messages, so a single recv() per
+// packet only ever sees the first fragment. Conversely every message belongs
+// to exactly one OTA packet: the host sends packets strictly one at a time and
+// waits for our ACK between them, so messages never straddle two packets.
 //
-// payload_buf must be at least PKT_BUF bytes (1 MB + 128).
-static bool recv_packet(UsbdClient& usbd, OtaPacket& pkt, uint8_t* payload_buf, size_t payload_buf_size) {
-    printf("[otad] recv_packet: waiting for message...\n");
+// We treat the OTA layer as a byte stream: pull whole usbd messages into a
+// buffer and hand out exact byte counts, carrying any residual to the next read.
+struct OtaStream {
+    UsbdClient&          usbd;
+    std::vector<uint8_t> buf;   // pending bytes not yet consumed
+    size_t               head;  // read offset into buf
+    std::vector<uint8_t> msg;   // scratch for one usbd message
 
-    if (!wait_readable(usbd)) return false;
+    explicit OtaStream(UsbdClient& u) : usbd(u), head(0), msg(PKT_BUF) {}
 
-    // One recv() call delivers the entire OTA packet as sent by the host.
-    ssize_t r = usbd.recv(payload_buf, (uint32_t)payload_buf_size);
-    if (r <= 0) {
-        printf("[otad] recv_packet: recv returned %zd\n", r);
-        return false;
-    }
-    printf("[otad] recv_packet: got %zd bytes\n", r);
+    size_t avail() const { return buf.size() - head; }
 
-    // Minimum packet: magic(1) + type(1) + payload_len(4) + checksum(1) = 7 bytes
-    if (r < 7) {
-        printf("[otad] recv_packet: message too short (%zd bytes)\n", r);
-        return false;
-    }
-
-    const uint8_t* msg = payload_buf;
-
-    if (msg[0] != OTA_MAGIC) {
-        printf("[otad] recv_packet: bad magic 0x%02X (expected 0x%02X)\n", msg[0], OTA_MAGIC);
-        return false;
-    }
-
-    pkt.type = msg[1];
-    uint32_t declared_payload_len = 0;
-    memcpy(&declared_payload_len, msg + 2, 4);
-
-    // Verify the message length matches what the header declares:
-    // expected = magic(1) + type(1) + payload_len_field(4) + payload + checksum(1)
-    size_t expected_total = 1 + 1 + 4 + declared_payload_len + 1;
-    if ((size_t)r != expected_total) {
-        printf("[otad] recv_packet: length mismatch — got %zd bytes, header says %zu\n",
-               r, expected_total);
-        return false;
+    // Pull exactly one usbd message into buf. false on error/disconnect.
+    bool pull_one() {
+        if (!wait_readable(usbd)) return false;
+        ssize_t r = usbd.recv(msg.data(), (uint32_t)msg.size());
+        if (r <= 0) {
+            printf("[otad] OtaStream: recv returned %zd\n", r);
+            return false;
+        }
+        // Drop the already-consumed prefix before appending, keeping buf bounded.
+        if (head > 0) {
+            buf.erase(buf.begin(), buf.begin() + head);
+            head = 0;
+        }
+        buf.insert(buf.end(), msg.begin(), msg.begin() + r);
+        return true;
     }
 
-    // Verify checksum over the payload bytes
-    const uint8_t* payload_start = msg + 6;
-    uint8_t cs_recv = msg[r - 1];
-    uint8_t cs_calc = xor_checksum(payload_start, declared_payload_len);
+    // Read exactly n bytes into out, pulling more messages as needed.
+    bool read_exact(uint8_t* out, size_t n) {
+        while (avail() < n) {
+            if (!pull_one()) return false;
+        }
+        memcpy(out, buf.data() + head, n);
+        head += n;
+        return true;
+    }
+};
+
+// Receive one full OTA packet from the reassembled byte stream.
+//   [1B magic][1B type][4B payload_len][payload][1B xor checksum]
+// payload_buf must hold at least payload_len bytes (PKT_BUF is sized for this).
+static bool recv_packet(OtaStream& stream, OtaPacket& pkt,
+                        uint8_t* payload_buf, size_t payload_buf_size) {
+    uint8_t header[6];
+    if (!stream.read_exact(header, 6)) {
+        printf("[otad] recv_packet: failed reading header\n");
+        return false;
+    }
+
+    if (header[0] != OTA_MAGIC) {
+        printf("[otad] recv_packet: bad magic 0x%02X (expected 0x%02X)\n", header[0], OTA_MAGIC);
+        return false;
+    }
+
+    pkt.type = header[1];
+    uint32_t payload_len = 0;
+    memcpy(&payload_len, header + 2, 4); // little-endian wire, matches encode_packet()
+
+    if ((size_t)payload_len > payload_buf_size) {
+        printf("[otad] recv_packet: payload too large (%u bytes)\n", payload_len);
+        return false;
+    }
+
+    if (payload_len && !stream.read_exact(payload_buf, payload_len)) {
+        printf("[otad] recv_packet: failed reading payload (%u bytes)\n", payload_len);
+        return false;
+    }
+
+    uint8_t cs_recv;
+    if (!stream.read_exact(&cs_recv, 1)) {
+        printf("[otad] recv_packet: failed reading checksum\n");
+        return false;
+    }
+    uint8_t cs_calc = xor_checksum(payload_buf, payload_len);
     if (cs_recv != cs_calc) {
         printf("[otad] recv_packet: checksum mismatch got=0x%02X expected=0x%02X\n",
                cs_recv, cs_calc);
         return false;
     }
 
-    pkt.payload_len = declared_payload_len;
-    // Point payload directly into the receive buffer (past the 6-byte header)
-    pkt.payload = payload_buf + 6;
+    pkt.payload_len = payload_len;
+    pkt.payload     = payload_buf;
 
     printf("[otad] recv_packet: OK type=0x%02X payload_len=%u\n", pkt.type, pkt.payload_len);
     return true;
@@ -355,10 +385,107 @@ static bool mkdir_p(const char* path) {
 }
 
 // ---- Apply update ------------------------------------------
-// Extracts zip and atomically replaces binaries.
-// Returns true on success.
+// The runtime binaries live on the SD FAT partition mounted at /mfoes:
+//   /mfoes/mfoes02w/mfoes02w   (main app)
+//   /mfoes/usbd  /mfoes/otad   (daemons)
+// The extracted update sits in /tmp (tmpfs) — a DIFFERENT filesystem — so we
+// must COPY, not rename(), across the boundary (rename() gives EXDEV). We copy
+// each file to "<dst>.new" on the same FS as the target, then rename() it into
+// place: rename is the only way to replace a binary that is currently running
+// (opening it O_WRONLY would fail ETXTBSY).
+
+// Copy src -> dst byte-for-byte, flushing to disk. Returns false on any error.
+static bool copy_file(const char* src, const char* dst) {
+    FILE* in = fopen(src, "rb");
+    if (!in) { printf("[otad] copy: open src %s failed: %s\n", src, strerror(errno)); return false; }
+    FILE* out = fopen(dst, "wb");
+    if (!out) { printf("[otad] copy: open dst %s failed: %s\n", dst, strerror(errno)); fclose(in); return false; }
+
+    uint8_t buf[65536];
+    bool ok = true;
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) { printf("[otad] copy: write %s failed\n", dst); ok = false; break; }
+    }
+    if (ferror(in)) { printf("[otad] copy: read %s failed\n", src); ok = false; }
+
+    fflush(out);
+    fsync(fileno(out));   // force data onto the SD card, not just the vfat cache
+    fclose(out);
+    fclose(in);
+    return ok;
+}
+
+// Install one file: copy to <dst>.new, then atomically rename over dst.
+// Missing src (partial update) is not an error.
+static bool install_binary(const char* src, const char* dst) {
+    if (access(src, F_OK) != 0) {
+        printf("[otad] %s not in this update, skipping\n", src);
+        return true;
+    }
+    char tmp_dst[300];
+    snprintf(tmp_dst, sizeof(tmp_dst), "%s.new", dst);
+
+    if (!copy_file(src, tmp_dst)) return false;
+    chmod(tmp_dst, 0755);   // no-op on vfat, harmless — keeps exec bit on other FSes
+
+    if (rename(tmp_dst, dst) != 0) {
+        printf("[otad] rename %s -> %s failed: %s\n", tmp_dst, dst, strerror(errno));
+        unlink(tmp_dst);
+        return false;
+    }
+    printf("[otad] Installed %s\n", dst);
+    return true;
+}
+
+// Mirror the extracted tree onto the target root: every regular file in the zip
+// is installed at the same relative path under /mfoes. This keeps otad generic —
+// the host-side FILES_TO_ZIP / FOLDERS_TO_ZIP list in tools/ota_usb_upload.py is
+// the single source of truth for what ships, so adding a new tool there needs no
+// otad change. Directories are created on demand; non-regular entries are skipped.
+static bool install_tree(const std::string& src_dir, const std::string& dst_dir) {
+    DIR* d = opendir(src_dir.c_str());
+    if (!d) {
+        printf("[otad] opendir %s failed: %s\n", src_dir.c_str(), strerror(errno));
+        return false;
+    }
+
+    bool ok = true;
+    struct dirent* ent;
+    while (ok && (ent = readdir(d)) != nullptr) {
+        if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
+
+        std::string src = src_dir + "/" + ent->d_name;
+        std::string dst = dst_dir + "/" + ent->d_name;
+
+        struct stat st;
+        if (stat(src.c_str(), &st) != 0) {
+            printf("[otad] stat %s failed: %s\n", src.c_str(), strerror(errno));
+            ok = false;
+            break;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            if (!mkdir_p(dst.c_str())) {
+                printf("[otad] mkdir %s failed: %s\n", dst.c_str(), strerror(errno));
+                ok = false;
+                break;
+            }
+            ok = install_tree(src, dst);
+        } else if (S_ISREG(st.st_mode)) {
+            ok = install_binary(src.c_str(), dst.c_str());
+            if (!ok) printf("[otad] Install FAILED for %s\n", dst.c_str());
+        } else {
+            printf("[otad] Skipping non-regular entry %s\n", src.c_str());
+        }
+    }
+
+    closedir(d);
+    return ok;
+}
 
 static bool apply_update(LinuxGFX& gfx) {
+    (void)gfx;
     printf("[otad] Extracting update...\n");
 
     // Use unzip; minizip would be cleaner but keeps deps minimal
@@ -369,28 +496,16 @@ static bool apply_update(LinuxGFX& gfx) {
         return false;
     }
 
-    printf("[otad] Installing binaries...\n");
-    // Install each binary with atomic rename
-    struct { const char* src; const char* dst; } bins[] = {
-        { "/tmp/ota_extract/mfoes02w/mfoes02w", "/mfoes/mfoes02w" },
-        { "/tmp/ota_extract/usbd",               "/mfoes/usbd"      },
-        { "/tmp/ota_extract/otad",               "/mfoes/otad"      },
-    };
-
-    for (auto& b : bins) {
-        if (access(b.src, F_OK) != 0) continue; // part not in this update
-        char tmp_dst[256];
-        snprintf(tmp_dst, sizeof(tmp_dst), "%s.new", b.dst);
-        rename(b.src, tmp_dst);
-        rename(tmp_dst, b.dst);
-        chmod(b.dst, 0755);
-        printf("[otad] Installed %s\n", b.dst);
+    printf("[otad] Installing everything from the update package...\n");
+    if (!install_tree("/tmp/ota_extract", "/mfoes")) {
+        printf("[otad] Install FAILED — aborting, no reboot\n");
+        system("rm -rf /tmp/ota_extract");
+        return false;
     }
 
-    // Install libs
-    system("cp -r /tmp/ota_extract/mfoes02w/libs/. /mfoes/mfoes02w/libs/");
-
     system("rm -rf /tmp/ota_extract");
+    sync();   // flush all vfat writes to the SD card before we reboot
+    printf("[otad] All binaries installed and synced to SD\n");
     return true;
 }
 
@@ -400,10 +515,11 @@ static void run_ota_session(UsbdClient& usbd, LinuxGFX& gfx) {
     std::vector<uint8_t> rx_buf(PKT_BUF);
     std::vector<uint8_t> tx_buf(PKT_BUF);
     OtaPacket pkt;
+    OtaStream stream(usbd);
 
     // ---- Wait for OTA_BEGIN ----
     printf("[otad] Waiting for OTA_BEGIN...\n");
-    if (!recv_packet(usbd, pkt, rx_buf.data(), rx_buf.size())) {
+    if (!recv_packet(stream, pkt, rx_buf.data(), rx_buf.size())) {
         printf("[otad] recv_packet failed for OTA_BEGIN\n");
         return;
     }
@@ -471,7 +587,7 @@ static void run_ota_session(UsbdClient& usbd, LinuxGFX& gfx) {
     uint32_t received_parts = 0;
 
     while (running && usbd.is_connected()) {
-        if (!recv_packet(usbd, pkt, rx_buf.data(), rx_buf.size())) break;
+        if (!recv_packet(stream, pkt, rx_buf.data(), rx_buf.size())) break;
 
         if (pkt.type == OTA_ABORT) {
             printf("[otad] Host aborted: %s\n", (char*)pkt.payload);

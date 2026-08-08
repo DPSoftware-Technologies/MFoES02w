@@ -7,9 +7,11 @@ App::App()
 #ifndef DESKTOP
     :   gfx("/dev/fb0"),
         i2c("/dev/i2c-1"),
-        touch(i2c, 17, 27),  // int_pin=17, rst_pin=27
+        touch(i2c, 23, 4),  // int_pin=23, rst_pin=4
         buz(0, 0),
         frameReady(false),
+        led1(6, true), // GPIO6
+        led2(26, true),  // GPIO26
 #else
     :   gfx("MFoES02w Demo", 1280, 720),
 #endif
@@ -35,6 +37,7 @@ void App::init() {
 
     // Start USB in background, don't block init
 #ifndef DESKTOP 
+    led1.set(1);
     snprintf(statusMsg, sizeof(statusMsg), "USB: starting...");
     pthread_create(&usb_thread, nullptr, App::usbThreadFunc, this);
 
@@ -145,7 +148,14 @@ void App::init() {
     }
     buz.disable();
 
-    buz.setFrequencyHz(1000.0f, 50.0f); 
+    buz.setFrequencyHz(1000.0f, 50.0f);
+    led1.set(0);
+
+    // Control panel and RTC on SPI1. Runs after the buzzer test so its status
+    // message is the last thing left on screen.
+    if (!initNorthbridge()) {
+        printf("Failed to initialize northbridge\n");
+    }
 #endif
 }
 
@@ -181,11 +191,24 @@ void App::process() {
 #endif
     inputHandle();
 
-    // Drain actions posted from other threads
-    std::lock_guard<std::mutex> lock(_actionQueueMutex);
-    while (!_actionQueue.empty()) {
-        auto fn = _actionQueue.front();
-        _actionQueue.pop();
+    // Drain actions posted from other threads.
+    //
+    // Take the whole queue under the lock and release it before running
+    // anything: a lock_guard living to the end of process() would hold the
+    // mutex across render() and the frame sleep, so every postAction() from a
+    // producer thread would block for a whole frame. That stalls the USB and
+    // northbridge threads and shows up as laggy input.
+    //
+    // Swapping also means a callback may itself postAction() without
+    // deadlocking on a non-recursive mutex.
+    std::queue<std::function<void()>> actions;
+    {
+        std::lock_guard<std::mutex> lock(_actionQueueMutex);
+        actions.swap(_actionQueue);
+    }
+    while (!actions.empty()) {
+        auto fn = actions.front();
+        actions.pop();
         fn();   // runs on main thread — safe to call UI/GFX
     }
 
@@ -199,10 +222,21 @@ void App::process() {
         lastUpdate1 = nowMs;
     }
 
+#ifndef DESKTOP
+    nbService();   // clock check; returns immediately unless it is due
+#endif
+
+    if (cycleCount % APP_FPS == 0) {
+        led2.set(1);
+    } else if (cycleCount % APP_FPS == 5) {
+        led2.set(0);
+    }
+
     ui.update(nowMs);
 
     render();
     usleep(fps_us);
+    cycleCount++;
 }
 
 int App::run() {
@@ -245,10 +279,20 @@ void App::ostop(bool restart) {
 }
 
 void App::stop() {
-    running = false; 
+    running = false;
+
+#ifndef DESKTOP
+    // Stop the link before tearing down the mutex its callbacks touch.
+    if (nb) {
+        nb->stop();
+        nb.reset();
+    }
+#endif
 
     pthread_mutex_destroy(&frameMutex);
-#ifndef DESKTOP 
+#ifndef DESKTOP
+    led2.set(0);
+    led1.set(1);
     buz.setFrequencyHz(500.0f, 50.0f);
     buz.enable();
     usleep(50000); 

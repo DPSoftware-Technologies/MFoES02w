@@ -32,9 +32,11 @@ OTA_NAK    = 0x05
 OTA_ABORT  = 0x06
 
 FILES_TO_ZIP = [
-    ("build-aarch64/bin/mfoes02w", "mfoes02w/mfoes02w"),
-    ("build-aarch64/bin/usbd",     "usbd"),
-    ("build-aarch64/bin/otad",     "otad"),
+    ("build-aarch64/bin/mfoes02w",    "mfoes02w/mfoes02w"),
+    ("build-aarch64/bin/usbd",        "usbd"),
+    ("build-aarch64/bin/otad",        "otad"),
+    ("build-aarch64/bin/cam_capture", "cam_capture"),
+    ("build-aarch64/bin/nb_link_test", "nb_link_test"),
 ]
 
 FOLDERS_TO_ZIP = [
@@ -55,32 +57,36 @@ def encode_packet(pkt_type: int, payload: bytes) -> bytes:
     cs = bytes([xor_checksum(payload)])
     return header + payload + cs
 
-def recv_exact(ch, n: int, timeout_s: float = 30.0) -> bytes:
-    buf = b""
+def recv_packet(ch, timeout_s: float = 60.0) -> tuple[int, bytes]:
+    """Returns (pkt_type, payload).
+
+    UsbChannel.recv() is message-framed: each call returns one whole usbd frame
+    payload, NOT a byte stream. Device->host OTA packets (ACK/NAK) are small and
+    are always delivered by the transport as a single framed message, so one
+    recv() yields the complete packet: [magic][type][4B len][payload][1B xor_cs].
+    """
     deadline = time.time() + timeout_s
-    while len(buf) < n:
+    while True:
         remaining = deadline - time.time()
         if remaining <= 0:
-            raise TimeoutError(f"recv_exact: wanted {n}, got {len(buf)}")
-        chunk = ch.recv(remaining)
-        if chunk is None:
-            # Timed out waiting, but maybe we still have time in the overall deadline
-            # Check again and continue the loop
-            continue
-        if not chunk:
-            # Empty data means connection closed
+            raise TimeoutError("recv_packet: timed out waiting for device")
+        data = ch.recv(remaining)
+        if data is None:
+            continue          # transport timeout tick; overall deadline still governs
+        if not data:
             raise ConnectionError("Channel closed during recv")
-        buf += chunk
-    return buf
+        break
 
-def recv_packet(ch, timeout_s: float = 60.0) -> tuple[int, bytes]:
-    """Returns (pkt_type, payload)"""
-    header = recv_exact(ch, 6, timeout_s)
-    magic, pkt_type, payload_len = struct.unpack_from("<BBI", header)
+    if len(data) < 7:
+        raise ValueError(f"Short packet: {len(data)} bytes")
+    magic, pkt_type, payload_len = struct.unpack_from("<BBI", data, 0)
     if magic != OTA_MAGIC:
         raise ValueError(f"Bad magic: 0x{magic:02X}")
-    payload = recv_exact(ch, payload_len, timeout_s) if payload_len else b""
-    cs_recv = recv_exact(ch, 1, timeout_s)[0]
+    expected = 6 + payload_len + 1
+    if len(data) != expected:
+        raise ValueError(f"Length mismatch: got {len(data)} bytes, header says {expected}")
+    payload = data[6:6 + payload_len]
+    cs_recv = data[6 + payload_len]
     cs_calc = xor_checksum(payload)
     if cs_recv != cs_calc:
         raise ValueError(f"Checksum mismatch: got 0x{cs_recv:02X} expected 0x{cs_calc:02X}")
@@ -191,6 +197,8 @@ def main():
     parser = argparse.ArgumentParser(description="MFoES OTA Uploader")
     parser.add_argument("--version",  default="dev", help="Firmware version string")
     parser.add_argument("--chunk-mb", type=int, default=1, help="Chunk size in MB")
+    parser.add_argument("--backend",  choices=["usb1", "pyusb"], default=None,
+                        help="USB backend (default: usb1 if available)")
     args = parser.parse_args()
 
     tmp_dir = "temp_ota"
@@ -198,6 +206,8 @@ def main():
         shutil.rmtree(tmp_dir)
     os.makedirs(tmp_dir)
 
+    mgr = None
+    ch  = None
     try:
         # Build
         zip_path   = build_zip(tmp_dir)
@@ -212,7 +222,7 @@ def main():
         # Connect
         print(f"\nConnecting to MFoES (VID={VID:#06x} PID={PID:#06x})...")
         mgr = mfoes02wusb.UsbChannelManager(vid=VID, pid=PID)
-        if not mgr.connect(timeout=30):
+        if not mgr.connect(timeout=30, backend=args.backend):
             print("Connection timed out.")
             return 1
         ch = mgr.open_channel(OTA_CHANNEL)
@@ -223,16 +233,30 @@ def main():
 
     except KeyboardInterrupt:
         print("\nInterrupted — sending ABORT...")
-        try:
-            abort_payload = b"user interrupted\x00"
-            ch.send(encode_packet(OTA_ABORT, abort_payload))
-        except Exception:
-            pass
+        if ch:
+            try:
+                abort_payload = b"user interrupted\x00"
+                ch.send(encode_packet(OTA_ABORT, abort_payload))
+            except Exception:
+                pass
         return 1
     except Exception as e:
         print(f"\nOTA failed: {e}")
         return 1
     finally:
+        # Must close before process exit: usb1 backend leaves async transfers
+        # + RX thread live otherwise, which races libusb teardown on exit
+        # (hangs/crashes are driver/timing-dependent — seen on some PCs, not others).
+        if ch:
+            try:
+                ch.close()
+            except Exception:
+                pass
+        if mgr:
+            try:
+                mgr.close()
+            except Exception:
+                pass
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return 0

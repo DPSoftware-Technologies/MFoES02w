@@ -340,6 +340,8 @@ class UsbChannelManager:
             for ch in list(self._channels.values()):
                 ch._mark_closed()
             self._channels.clear()
+        if self._rx_thread and self._rx_thread.is_alive():
+            self._rx_thread.join(timeout=2.0)
         if self._usb1_handle:
             try:
                 self._usb1_handle.releaseInterface(self.iface_num)

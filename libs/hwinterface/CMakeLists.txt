@@ -13,11 +13,15 @@ add_library(hwinterface
     gt911.cpp
     spi_dev.cpp
     southbridge.cpp
+    northbridge.cpp
     pwm.cpp
 )
 
 target_include_directories(hwinterface PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
+    # nb_protocol.h lives with the firmware that implements it, and is shared
+    # rather than copied so the two ends cannot drift apart.
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Firmware/northbridge/src
 )
 
 target_link_libraries(hwinterface PUBLIC pthread)

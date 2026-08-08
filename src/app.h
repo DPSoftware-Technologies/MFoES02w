@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <queue>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include "uisys/manager.h"
@@ -21,6 +22,8 @@
 #include "hwinterface/i2c_dev.h"
 #include "hwinterface/usbd_client.h"
 #include "hwinterface/pwm.h"
+#include "hwinterface/gpio_sysfs.h"
+#include "hwinterface/northbridge.h"
 
 #include "dts.h"
 
@@ -60,10 +63,28 @@ class App {
         GT911 touch;
         PWM buz;
 
+        GpioPin led1;
+        GpioPin led2;
+
         // USB
         pthread_t usb_thread;
         static void* usbThreadFunc(void* arg);
         void usbLoop();
+
+        // Northbridge (Pico) control panel and RTC, over SPI1
+        std::unique_ptr<northbridge::Link> nb;
+        NbInfoWire  nbInfo{};
+        NbPanelWire nbPanel{};
+        bool        nbOnline     = false;
+        bool        nbClockFromRtc = false;  // we set the system clock, so do not push it back
+        uint32_t    nbLastClockCheck = 0;
+
+        bool initNorthbridge();
+        void nbService();                    // called from process(), cheap when idle
+        void nbOnPanelEvent(const northbridge::PanelState& panel);
+        bool nbReadTime(NbTimeWire& out, unsigned timeout_ms = 250, unsigned attempts = 3);
+        bool nbAdoptRtcTime();               // RTC -> system clock
+        bool nbPushSystemTime();             // system clock -> RTC
 
         // DTS
         bool hasFrame = false;
@@ -111,7 +132,7 @@ class App {
         // Data input handler
         CValue cvdata = {};
         
-        bool show_about = false;
+        bool show_about = true;
         bool hide_ui = false;
         bool show_data_in = false;
         bool show_info = false;
@@ -123,6 +144,8 @@ class App {
         bool RRFF = false; // Force render
         
         uint32_t lastUpdate1 = 0;
+
+        int cycleCount = 0;
 };
 
 static std::vector<ColorThreshold> InfoBarThresholdsColors {

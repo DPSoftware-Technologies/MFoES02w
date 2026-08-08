@@ -7,6 +7,13 @@
 #include <functional>
 
 #ifdef GFXSDL
+// Libraries must not hijack the user's main() entry point.
+// SDL_MAIN_HANDLED suppresses SDL's "#define main SDL_main" macro so that
+// callers keep their own main(). The library calls SDL_SetMainReady() in its
+// constructor before SDL_Init(), which is the required companion call.
+#ifndef SDL_MAIN_HANDLED
+#  define SDL_MAIN_HANDLED
+#endif
 #include <SDL2/SDL.h>
 #endif
 
@@ -87,6 +94,39 @@ struct GFXInputEvent {
 /// Callback type for input events: void callback(const GFXInputEvent& event)
 using GFXEventCallback = std::function<void(const GFXInputEvent&)>;
 
+// ===== DRAW STYLE ===========================================================
+
+/// Cap style applied to the open ends of stroked lines.
+enum class GFXLineCap : uint8_t {
+    Butt   = 0, ///< Flat end exactly at the endpoint (default)
+    Round  = 1, ///< Semicircle of radius strokeWidth/2 at each endpoint
+    Square = 2, ///< Flat end extended by strokeWidth/2 beyond the endpoint
+};
+
+/// Join style applied where two stroked segments meet.
+enum class GFXLineJoin : uint8_t {
+    Miter = 0, ///< Sharp mitered corner (default)
+    Bevel = 1, ///< Bevelled (clipped) corner
+    Round = 2, ///< Rounded corner
+};
+
+/**
+ * Aggregate draw style applied by all stroke primitives.
+ *
+ * Set globally with setDrawStyle() / individual setters, or save/restore with
+ * getDrawStyle() / setDrawStyle() for temporary overrides.
+ *
+ * Defaults (strokeWidth=1, lineCap=Butt, lineJoin=Miter, antiAlias=false)
+ * reproduce the original single-pixel Bresenham behaviour so existing code
+ * requires no changes.
+ */
+struct GFXDrawStyle {
+    uint8_t     strokeWidth = 1;                  ///< Stroke width in pixels (1 = thin, default)
+    GFXLineCap  lineCap     = GFXLineCap::Butt;   ///< Cap style for line/arc endpoints
+    GFXLineJoin lineJoin    = GFXLineJoin::Miter;  ///< Join style at stroke corners
+    bool        antiAlias   = false;              ///< Anti-aliased rendering (default off)
+};
+
 // ===== MULTI-BUFFER SUPPORT (Framebuffer back-end only) ======================
 
 enum BufferIndex { BUFFER_0 = 0, BUFFER_1 = 1, BUFFER_2 = 2 };
@@ -99,7 +139,7 @@ typedef struct {
 
 // ===== LinuxGFX ===============================================================
 /**
- * Adafruit-GFX-compatible graphics library for Linux / Buildroot on RPi Zero 2W.
+ * Adafruit-GFX-compatible graphics library for Linux (FB/SDL) / Windows (SDL).
  *
  * Color format: ARGB8888 (32-bit, 0xAARRGGBB).
  *   Full RGB888 output — no colour quantisation vs the old RGB565 mode.
@@ -163,6 +203,23 @@ public:
     void drawCircle     (int16_t x0, int16_t y0, int16_t r, uint32_t color);
     void fillCircle     (int16_t x0, int16_t y0, int16_t r, uint32_t color);
 
+    /**
+     * Draw an arc (partial circle outline).
+     *
+     * Angles are in degrees.  0° = +x axis (east / 3 o'clock).  Because the
+     * screen y-axis points down, increasing angle sweeps CLOCKWISE
+     * (90° = south / 6 o'clock).  The arc runs from startAngle clockwise to
+     * endAngle — pass endAngle > startAngle for the natural direction.
+     * A full turn (|endAngle - startAngle| == 360) draws a complete circle;
+     * a zero span draws nothing.
+     *
+     * Honours the current draw style: strokeWidth > 1 renders a thick ring
+     * band, antiAlias smooths the edges, and the default 1px/no-AA style
+     * produces a crisp midpoint outline.
+     */
+    void drawArc        (int16_t x0, int16_t y0, int16_t r,
+                         float startAngle, float endAngle, uint32_t color);
+
     void drawRoundRect  (int16_t x, int16_t y, int16_t w, int16_t h, int16_t radius, uint32_t color);
     void fillRoundRect  (int16_t x, int16_t y, int16_t w, int16_t h, int16_t radius, uint32_t color);
 
@@ -203,6 +260,17 @@ public:
 
     void drawRGB565Bitmap(int16_t x, int16_t y, const uint16_t *bitmap, int16_t w, int16_t h);
 
+    // Textured triangle: bitmap is ARGB8888 (texW×texH).
+    // p0→UV(0,0)  p1→UV(texW-1,0)  p2→UV(0,texH-1)
+    void drawBitmapTriangle(int16_t x0, int16_t y0,
+                            int16_t x1, int16_t y1,
+                            int16_t x2, int16_t y2,
+                            const uint32_t *bitmap, int16_t texW, int16_t texH);
+    void drawBitmapTriangle(int16_t x0, int16_t y0,
+                            int16_t x1, int16_t y1,
+                            int16_t x2, int16_t y2,
+                            uint32_t *bitmap, int16_t texW, int16_t texH);
+
     // ===== TEXT API ==========================================================
 
     void setCursor (int16_t x, int16_t y);
@@ -231,6 +299,15 @@ public:
     void print   (const char *text);      ///< Write text, cursor stays on same line
     void println (const char *text);      ///< Write text, cursor advances to next line
     void println ();                      ///< Advance cursor to next line
+
+    // ===== DRAW STYLE API ====================================================
+
+    void               setDrawStyle  (const GFXDrawStyle &style); ///< Replace full style state
+    const GFXDrawStyle &getDrawStyle () const;                     ///< Read current style
+    void               setStrokeWidth(uint8_t width);  ///< Stroke width in pixels (1 = default)
+    void               setLineCap    (GFXLineCap cap);  ///< Cap style for line endpoints
+    void               setLineJoin   (GFXLineJoin join);///< Join style at corners
+    void               setAntiAlias  (bool enable);    ///< Toggle anti-aliasing (default off)
 
     // ===== CONTROL API =======================================================
 
@@ -331,6 +408,28 @@ protected:
     virtual void drawFastVLineInternal(int16_t x, int16_t y, int16_t h, uint32_t color);
     virtual void drawFastHLineInternal(int16_t x, int16_t y, int16_t w, uint32_t color);
 
+    // ===== STYLED RENDERING HELPERS (called by draw* when style != default) ==
+
+    /// Xiaolin Wu anti-aliased line (strokeWidth == 1, antiAlias == true).
+    void writeLineAA     (int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint32_t color);
+    /// Thick solid line rendered as a filled parallelogram + optional caps.
+    void writeThickLine  (int16_t x0, int16_t y0, int16_t x1, int16_t y1,
+                          uint32_t color, uint8_t width);
+    /// Anti-aliased 1-pixel-wide circle outline using a distance-field approach.
+    void writeCircleAA   (int16_t x0, int16_t y0, int16_t r, uint32_t color);
+    /// Thick circle outline (annular ring) filled with scan-line spans.
+    void writeThickCircle(int16_t x0, int16_t y0, int16_t r, uint32_t color, uint8_t width);
+    /// Thick arc for one or more quadrants — used by drawRoundRect with strokeWidth > 1.
+    /// cornermask: 0x1=top-left  0x2=top-right  0x4=bottom-right  0x8=bottom-left
+    void writeThickArc   (int16_t x0, int16_t y0, int16_t r, uint8_t cornermask,
+                          uint32_t color, uint8_t width);
+    /// Anti-aliased 1-pixel arc outline (strokeWidth == 1, antiAlias == true).
+    void writeArcAA      (int16_t x0, int16_t y0, int16_t r,
+                          float startAngle, float sweep, uint32_t color);
+    /// Thick arc outline (annular band) over an arbitrary angular span.
+    void writeArcThick   (int16_t x0, int16_t y0, int16_t r,
+                          float startAngle, float sweep, uint32_t color, uint8_t width);
+
     // ===== Framebuffer / multi-buffer members (always present) ================
     int       m_fbFd;
     uint8_t  *m_pFbMem;
@@ -393,6 +492,8 @@ protected:
 
     const GFXfont *m_pFont;
     bool           m_fontSizeMultiplied;
+
+    GFXDrawStyle   m_drawStyle; ///< Current draw style (strokeWidth, lineCap, lineJoin, AA)
 };
 
 // Backwards-compat alias
