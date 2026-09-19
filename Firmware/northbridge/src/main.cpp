@@ -13,9 +13,11 @@
 #include "ds3231.h"
 #include "dspi.h"
 #include "dspi_cmd.h"
+#include "encoder.h"
 #include "i2c_bus.h"
 #include "nb_protocol.h"
 #include "pcf8575.h"
+#include "selftest.h"
 
 namespace {
 
@@ -28,19 +30,29 @@ namespace {
     constexpr uint8_t kTypeGetTime = NB_CMD_GET_TIME;
     constexpr uint8_t kTypeSetTime = NB_CMD_SET_TIME;
     constexpr uint8_t kTypeGetInfo = NB_CMD_GET_INFO;
+    constexpr uint8_t kTypeEncEvt = NB_CMD_ENC_EVT;
+    constexpr uint8_t kTypeGetEnc = NB_CMD_GET_ENC;
 
     /* Set once at startup, reported in the info reply. */
     bool g_rtc_ok = false;
     bool g_panel_ok = false;
+    bool g_encoder_ok = false;
     uint16_t g_led_state = 0;
 
     /* ---- Command handlers. One per frame type, no frame parsing. ---- */
 
-    /* Master sets the panel LEDs. No reply. */
+    /* Master sets the panel LEDs. No reply. This is the ONLY thing that lights
+     * them once the self test has finished; the firmware never drives them on
+     * its own. A command that lands while the test still owns the LEDs is
+     * remembered and applied by panel_task the moment the test releases them,
+     * rather than blocking the dispatch task for a second. */
     void on_set_leds(const DspiMsg &req, DspiReply &, void *) {
         if (req.len >= 1) {
             g_led_state = (uint16_t)(req.payload[0] & 0x0f);
-            pcf8575_set_leds((uint16_t)(g_led_state << __builtin_ctz(PCF8575_LED_MASK)));
+            printf("leds set by master: %x%s\n", g_led_state, selftest_done() ? "" : " (deferred, selftest running)");
+            if (selftest_done()) {
+                pcf8575_set_leds((uint16_t)(g_led_state << __builtin_ctz(PCF8575_LED_MASK)));
+            }
         }
     }
 
@@ -51,6 +63,15 @@ namespace {
         panel.toggles = (uint8_t)pcf8575_toggles();
         panel.leds = (uint8_t)g_led_state;
         reply.write(panel);
+    }
+
+    /* Master asks where the encoder currently sits. */
+    void on_get_encoder(const DspiMsg &, DspiReply &reply, void *) {
+        NbEncoderWire wire{};
+        wire.position = encoder_position();
+        wire.delta = 0; /* a poll reports state, not movement */
+        wire.pressed = encoder_button() ? 1 : 0;
+        reply.write(wire);
     }
 
     /* Master asks for the time, with the RTC die temperature thrown in. */
@@ -132,7 +153,9 @@ namespace {
         pico_get_unique_board_id(&id);
         memcpy(&info.board_id, id.id, sizeof(info.board_id));
 
-        info.features = (uint8_t)((g_rtc_ok ? NB_FEAT_RTC : 0) | (g_panel_ok ? NB_FEAT_PANEL : 0));
+        info.features = (uint8_t)((g_rtc_ok ? NB_FEAT_RTC : 0) | (g_panel_ok ? NB_FEAT_PANEL : 0) |
+                                  (g_encoder_ok ? NB_FEAT_ENCODER : 0) |
+                                  (selftest_result().passed ? NB_FEAT_POST_OK : 0));
 
         reply.write(info);
     }
@@ -171,9 +194,15 @@ namespace {
         }
     }
 
-    /* Reports expander pin changes and mirrors the first four buttons onto the
-     * LEDs. Blocks on the queue, so it costs nothing idle. */
+    /* Reports expander pin changes to the main controller. Blocks on the queue,
+     * so it costs nothing idle. The LEDs are not touched here: they answer to
+     * NB_CMD_SET_LEDS and nothing else. */
     void panel_task(void *) {
+        selftest_wait();
+
+        /* Apply whatever the master asked for while the test held the LEDs. */
+        pcf8575_set_leds((uint16_t)(g_led_state << __builtin_ctz(PCF8575_LED_MASK)));
+
         for (;;) {
             Pcf8575Msg msg{};
             if (!pcf8575_wait(msg)) {
@@ -209,8 +238,33 @@ namespace {
                 0,
             };
             dspi_send(kTypePanel, packet, sizeof(packet));
+        }
+    }
 
-            pcf8575_set_leds((uint16_t)((pcf8575_buttons() & 0x0f) << __builtin_ctz(PCF8575_LED_MASK)));
+    /* Reports rotation and button changes, and forwards them to the main
+     * controller. Blocks on the queue, so it costs nothing idle. */
+    void encoder_task(void *) {
+        for (;;) {
+            EncoderMsg msg{};
+            if (!encoder_wait(msg)) {
+                continue;
+            }
+
+            if (msg.button_edge) {
+                printf("encoder button %s (pos=%ld)\n", msg.pressed ? "down" : "up", (long)msg.position);
+            } else {
+                printf("encoder %+d (pos=%ld err=%lu)\n", msg.delta, (long)msg.position,
+                       (unsigned long)encoder_error_count());
+            }
+
+            /* Position rides along with every event, so a dropped frame
+             * self-corrects the same way the panel events do. */
+            NbEncoderWire wire{};
+            wire.position = msg.position;
+            wire.delta = msg.delta;
+            wire.pressed = msg.pressed ? 1 : 0;
+            wire.flags = (uint8_t)((msg.button_edge ? NB_ENC_BUTTON : 0) | (msg.delta != 0 ? NB_ENC_MOVED : 0));
+            dspi_send(kTypeEncEvt, &wire, sizeof(wire));
         }
     }
 
@@ -277,6 +331,8 @@ namespace {
 
     // Toggles the LED at 2 Hz and reports each edge to the logger task.
     void blink_task(void *) {
+        selftest_wait(); /* the self test holds this LED solid while it runs */
+
         gpio_init(IO_LED);
         gpio_set_dir(IO_LED, GPIO_OUT);
 
@@ -340,14 +396,24 @@ int main() {
     g_panel_ok = pcf8575_init(tskIDLE_PRIORITY + 2);
     hard_assert(g_panel_ok);
 
+    // Same reasoning for the encoder: a detent that waits behind a bus scan is
+    // a detent the user feels as a missed click.
+    g_encoder_ok = encoder_init(tskIDLE_PRIORITY + 2);
+    hard_assert(g_encoder_ok);
+
     // Link task sits high too: the master is waiting on the other end of every
     // frame it clocks.
     hard_assert(dspi_init(tskIDLE_PRIORITY + 3));
+
+    // Runs once, before anything else drives the LEDs or the buzzer, and every
+    // task that shares that hardware waits on selftest_wait() first.
+    hard_assert(selftest_start(tskIDLE_PRIORITY + 2));
 
     xTaskCreate(blink_task, "blink", configMINIMAL_STACK_SIZE, nullptr, tskIDLE_PRIORITY + 2, nullptr);
     // xTaskCreate(i2c_scan_task, "i2cscan", configMINIMAL_STACK_SIZE * 2, nullptr, tskIDLE_PRIORITY + 1, nullptr);
     xTaskCreate(rtc_task, "rtc", configMINIMAL_STACK_SIZE * 2, nullptr, tskIDLE_PRIORITY + 1, nullptr);
     xTaskCreate(panel_task, "panel", configMINIMAL_STACK_SIZE * 2, nullptr, tskIDLE_PRIORITY + 1, nullptr);
+    xTaskCreate(encoder_task, "encevt", configMINIMAL_STACK_SIZE * 2, nullptr, tskIDLE_PRIORITY + 1, nullptr);
     // Command dispatch. Handlers run on this task, so they may block and may
     // use the I2C bus; keep them under whatever the master waits for.
     hard_assert(dspi_cmd_init(tskIDLE_PRIORITY + 2));
@@ -357,6 +423,7 @@ int main() {
     dspi_on(kTypeGetTime, on_get_time);
     dspi_on(kTypeSetTime, on_set_time);
     dspi_on(kTypeGetInfo, on_get_info);
+    dspi_on(kTypeGetEnc, on_get_encoder);
     dspi_on_unknown(on_unknown);
 
     xTaskCreate(heartbeat_task, "beat", configMINIMAL_STACK_SIZE * 2, nullptr, tskIDLE_PRIORITY + 1, nullptr);

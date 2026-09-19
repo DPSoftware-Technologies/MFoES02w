@@ -1,6 +1,6 @@
 # GFX Library Examples
 
-Three simple examples to get started with the GFX library and SDL backend.
+Four examples to get started with the GFX library and SDL backend.
 
 ## Build Instructions
 
@@ -93,6 +93,29 @@ A simple paint program using mouse drawing.
 **Interaction:**
 - Click and drag to draw
 - Each line segment connects to previous position
+
+---
+
+### 4. example_drawreplay
+**File:** `example_drawreplay.cpp`
+
+Records draw commands to bytes and replays them onto another renderer — the
+`DrawReplay` API (`DRExport` / `DRRender` / `DRFlush`). Console only, no window.
+
+**Features:**
+- Draws one scene into a `GFXcanvas` and into a `DrawReplay`, then replays the
+  exported bytes and checks the result is pixel-identical
+- Prints the command count and the blob size against a raw framebuffer
+- Shows the record mask (`DRIgnore(DR_REC_BITMAPS_ALL)`, per-function flags,
+  `setMaxInlineBytes()`) that keeps inline pixel payloads out of the stream
+- Shows malformed streams being rejected instead of over-read
+
+**Run:**
+```bash
+./example_drawreplay
+```
+
+Exits non-zero if any check fails, so it doubles as a regression test.
 
 ---
 
@@ -198,6 +221,7 @@ Install SDL2 development package (see Prerequisites above)
 1. **Start with `example_simple`** - Learn basic drawing
 2. **Move to `example_input`** - Understand event handling
 3. **Try `example_paint`** - Combine drawing + input
+4. **Read `example_drawreplay`** - Send drawings as bytes instead of pixels
 
 ## API Reference
 

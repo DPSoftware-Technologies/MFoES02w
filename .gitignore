@@ -6,3 +6,4 @@ compile_commands.json
 /.claude
 CLAUDE.md
 /Firmware/FreeRTOS-Kernel
+*.FCBak

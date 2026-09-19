@@ -84,6 +84,17 @@ int main(int argc, char** argv) {
             return;
         }
 
+        northbridge::EncoderState enc;
+        if (northbridge::EncoderState::decode(f, enc)) {
+            if (enc.button) {
+                std::printf("encoder button %s pos=%" PRId32 "\n", enc.pressed ? "down" : "up", enc.position);
+            } else {
+                std::printf("encoder %+d pos=%" PRId32 " btn=%s\n", enc.delta, enc.position,
+                            enc.pressed ? "down" : "up");
+            }
+            return;
+        }
+
         if (f.type == 0x01 && f.len >= 4) {
             uint32_t uptime = 0;
             std::memcpy(&uptime, f.payload.data(), sizeof(uptime));
@@ -114,8 +125,10 @@ int main(int argc, char** argv) {
                         info.fw_patch, info.proto_version, NB_PROTO_VERSION);
             std::printf("  built %04u-%02u-%02u %02u:%02u:%02u, up %" PRIu32 " s\n", info.build_year, info.build_month,
                         info.build_day, info.build_hour, info.build_minute, info.build_second, info.uptime_s);
-            std::printf("  board id %016" PRIx64 ", rtc=%s panel=%s\n", info.board_id,
-                        (info.features & NB_FEAT_RTC) ? "yes" : "no", (info.features & NB_FEAT_PANEL) ? "yes" : "no");
+            std::printf("  board id %016" PRIx64 ", rtc=%s panel=%s encoder=%s selftest=%s\n", info.board_id,
+                        (info.features & NB_FEAT_RTC) ? "yes" : "no", (info.features & NB_FEAT_PANEL) ? "yes" : "no",
+                        (info.features & NB_FEAT_ENCODER) ? "yes" : "no",
+                        (info.features & NB_FEAT_POST_OK) ? "pass" : "FAIL");
 
             if (info.proto_version != NB_PROTO_VERSION) {
                 std::fprintf(stderr, "WARNING: protocol mismatch, payload layouts may differ\n");
@@ -144,6 +157,11 @@ int main(int argc, char** argv) {
         if (link->request(northbridge::kTypeGetPanel, nullptr, 0, reply) &&
             northbridge::payload_of(reply, panel)) {
             std::printf("panel: buttons=%06" PRIx32 " toggles=%x leds=%x\n", panel.buttons, panel.toggles, panel.leds);
+        }
+
+        NbEncoderWire encw{};
+        if (link->request(northbridge::kTypeGetEnc, nullptr, 0, reply) && northbridge::payload_of(reply, encw)) {
+            std::printf("encoder: pos=%" PRId32 " btn=%s\n", encw.position, encw.pressed ? "down" : "up");
         }
 
         NbTimeWire now{};

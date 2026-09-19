@@ -21,6 +21,14 @@
  * 16 + 8 = 24 buttons, 4 toggles, 4 LEDs. Set to 0 if the roles are swapped. */
 #define PCF8575_LED_CHIP 1
 
+/* LED polarity on that chip.
+ *   1 = a lit LED is a pin driven LOW (LED and resistor to 3V3). This is what
+ *       the quasi-bidirectional PCF8575 does well: it sinks ~25 mA per pin and
+ *       sources only the ~100 uA weak pull-up.
+ *   0 = a lit LED is a pin driven HIGH. Only usable behind a buffer or a
+ *       transistor, since the raw pin cannot source enough to light an LED. */
+#define PCF8575_LED_ACTIVE_LOW 1
+
 // SPI bus for slave
 // Audio (SPI0) (input only)
 #define IO_ASPI_SCK 3
@@ -39,3 +47,8 @@
 #define IO_R2R_OE 8
 #define IO_R2R_ST 7
 #define IO_R2R_SH 6
+
+// Rotary Encoder
+#define IO_RE_BTN 21
+#define IO_RE_S2 20
+#define IO_RE_S1 19

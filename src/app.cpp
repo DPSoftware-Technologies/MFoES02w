@@ -41,6 +41,10 @@ void App::init() {
     snprintf(statusMsg, sizeof(statusMsg), "USB: starting...");
     pthread_create(&usb_thread, nullptr, App::usbThreadFunc, this);
 
+    // Outbound recorded-UI stream. Waits for a remote to attach on its own
+    // channel; until then render() skips the recording pass entirely.
+    drStart();
+
     GTConfig* cfg = touch.readConfig();
     if (cfg) {
         cfg->xResolution = 1280;
@@ -226,11 +230,15 @@ void App::process() {
     nbService();   // clock check; returns immediately unless it is due
 #endif
 
+#ifndef DESKTOP
+    // Heartbeat LED is hardware-only. Without this guard DESKTOP_BUILD does
+    // not compile, since led2 is declared under the same condition.
     if (cycleCount % APP_FPS == 0) {
         led2.set(1);
     } else if (cycleCount % APP_FPS == 5) {
         led2.set(0);
     }
+#endif
 
     ui.update(nowMs);
 
@@ -305,6 +313,17 @@ void App::stop() {
     int s = pthread_timedjoin_np(usb_thread, nullptr, &ts);
     if (s == ETIMEDOUT) {
         // Thread didn't stop in time, move on anyway
+    }
+
+    // Wake the DrawReplay sender so it sees running == false instead of
+    // sitting out its wait_for timeout.
+    if (drThreadRunning) {
+        drCv.notify_all();
+        struct timespec dts;
+        clock_gettime(CLOCK_REALTIME, &dts);
+        dts.tv_sec += 2;
+        pthread_timedjoin_np(dr_thread, nullptr, &dts);
+        drThreadRunning = false;
     }
     usleep(100000); 
     system("clear > /dev/fb0");

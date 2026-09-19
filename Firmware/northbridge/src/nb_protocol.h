@@ -12,10 +12,10 @@
  *  Cortex-M0+ agree byte for byte without relying on either one's alignment
  *  rules. Add fields at the END of a struct and bump NB_PROTO_VERSION.        */
 
-#define NB_PROTO_VERSION 1
+#define NB_PROTO_VERSION 2
 
 #define NB_FW_VERSION_MAJOR 0
-#define NB_FW_VERSION_MINOR 2
+#define NB_FW_VERSION_MINOR 3
 #define NB_FW_VERSION_PATCH 0
 
 /*  Frame types.
@@ -27,10 +27,18 @@
 #define NB_CMD_GET_TIME 0x13  /* -> NbTimeWire                                */
 #define NB_CMD_SET_TIME 0x14  /* NbTimeWire -> NbStatusWire                   */
 #define NB_CMD_GET_INFO 0x15  /* -> NbInfoWire                                */
+#define NB_CMD_ENC_EVT 0x16   /* unsolicited: the encoder moved or was pressed*/
+#define NB_CMD_GET_ENC 0x17   /* -> NbEncoderWire                             */
 
 /*  NbInfoWire.features                                                       */
-#define NB_FEAT_RTC 0x01   /* DS3231 answered at boot        */
-#define NB_FEAT_PANEL 0x02 /* PCF8575 expanders came up      */
+#define NB_FEAT_RTC 0x01     /* DS3231 answered at boot        */
+#define NB_FEAT_PANEL 0x02   /* PCF8575 expanders came up      */
+#define NB_FEAT_ENCODER 0x04 /* rotary encoder is being read   */
+#define NB_FEAT_POST_OK 0x08 /* power-on self test passed      */
+
+/*  NbEncoderWire.flags                                                       */
+#define NB_ENC_MOVED 0x01  /* delta is a real rotation report */
+#define NB_ENC_BUTTON 0x02 /* pressed changed in this event   */
 
 /*  NbStatusWire.code                                                         */
 #define NB_OK 0
@@ -65,6 +73,15 @@ typedef struct {
     uint8_t leds; /* current LED state, bit 0 = first LED */
 } NbPanelWire;
 
+/* Rotary encoder. Sent on every change, and on request. Rotation is counted in
+ * detents (clicks), not quadrature edges. */
+typedef struct {
+    int32_t position; /* detents since boot, signed, free running */
+    int8_t delta;     /* detents in this event, + = clockwise */
+    uint8_t pressed;  /* 1 = button down */
+    uint8_t flags;    /* NB_ENC_* */
+} NbEncoderWire;
+
 /* Who am I, and what am I running. */
 typedef struct {
     uint8_t proto_version; /* NB_PROTO_VERSION the firmware speaks */
@@ -92,9 +109,11 @@ typedef struct {
 #ifdef __cplusplus
 static_assert(sizeof(NbTimeWire) == 10, "NbTimeWire layout changed");
 static_assert(sizeof(NbPanelWire) == 6, "NbPanelWire layout changed");
+static_assert(sizeof(NbEncoderWire) == 7, "NbEncoderWire layout changed");
 static_assert(sizeof(NbInfoWire) == 24, "NbInfoWire layout changed");
 #else
 _Static_assert(sizeof(NbTimeWire) == 10, "NbTimeWire layout changed");
 _Static_assert(sizeof(NbPanelWire) == 6, "NbPanelWire layout changed");
+_Static_assert(sizeof(NbEncoderWire) == 7, "NbEncoderWire layout changed");
 _Static_assert(sizeof(NbInfoWire) == 24, "NbInfoWire layout changed");
 #endif

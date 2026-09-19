@@ -15,9 +15,10 @@
  *
  * The parts are quasi-bidirectional: a pin used as an input must be left
  * written high (weak ~100uA pull-up), and an output can only sink current
- * usefully. So LEDs are wired to 3V3 and light when their bit is driven LOW.
- * The driver keeps an output shadow per chip and always writes 1s to the input
- * bits, so writing an LED can never break the inputs. */
+ * usefully. So LEDs are normally wired to 3V3 and light when their bit is
+ * driven LOW; PCF8575_LED_ACTIVE_LOW in IODef.h says whether that is how this
+ * board is built. The driver keeps an output shadow per chip and always writes
+ * 1s to the input bits, so writing an LED can never break the inputs. */
 
 #define PCF8575_CHIP_COUNT 2
 
@@ -57,7 +58,8 @@ uint32_t pcf8575_buttons(void);
 uint16_t pcf8575_toggles(void);
 
 /* LED control on the chip carrying PCF8575_LED_MASK. `state` is a bitmask in
- * the same bit positions as PCF8575_LED_MASK; a set bit lights the LED. */
+ * the same bit positions as PCF8575_LED_MASK; a set bit lights the LED,
+ * whichever pin level that takes -- see PCF8575_LED_ACTIVE_LOW in IODef.h. */
 int pcf8575_set_leds(uint16_t state, TickType_t wait = pdMS_TO_TICKS(100));
 int pcf8575_led(uint8_t index, bool on, TickType_t wait = pdMS_TO_TICKS(100));
 

@@ -80,6 +80,7 @@ endif()
 
 add_subdirectory(libs/libgfx)
 add_subdirectory(libs/hwinterface)
+add_subdirectory(libs/usbproto)
 add_subdirectory(libs/uisys)
 add_subdirectory(libs/linfo)
 add_subdirectory(libs/UIDisplayWidgets)
@@ -91,6 +92,7 @@ add_executable(mfoes02w
     src/ui.cpp
     src/app.cpp
     src/northbridge_link.cpp
+    src/drawreplay_link.cpp
 )
 
 # Link pthread statically if needed
@@ -100,10 +102,11 @@ target_link_libraries(mfoes02w
         Threads::Threads
         libgfx
         pthread
-        hwinterface 
+        hwinterface
         uisys
         linfo
         UIDisplayWidgets
+        usbproto
 )
 
 if(NOT DESKTOP_BUILD)

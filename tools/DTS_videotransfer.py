@@ -17,10 +17,20 @@ TARGET_FPS = 30
 TILE_HDR_FMT  = '<BBBHH'
 TILE_HDR_SIZE = struct.calcsize(TILE_HDR_FMT)  # 7 bytes
 
-mgr = mfoes02wusb.UsbChannelManager(vid=0x750C, pid=0x0544)
-print("connecting to MFoES02w...")
-if not mgr.connect(timeout=30):
-    exit(1)
+mgr = mfoes02wusb.UsbChannelManager()
+
+# Prefer a broker if one is up. libusb claims the USB interface exclusively, so
+# while remote_viewer holds the gadget a direct connect() can never succeed —
+# it just retries until it times out. Fall back to direct USB when no broker is
+# running. Do NOT call both: connect() after connect_broker() would try to
+# claim the device anyway and replace the working transport.
+if mgr.connect_broker(timeout=1.0):
+    print("connected through the broker")
+else:
+    print("connecting to MFoES02w...")
+    if not mgr.connect(timeout=30):
+        exit(1)
+
 ch = mgr.open_channel(0)
 
 def tile_diff(t1, t2):

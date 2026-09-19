@@ -123,7 +123,10 @@ bool pcf8575_init(UBaseType_t task_priority, UBaseType_t queue_depth) {
     for (uint8_t chip = 0; chip < PCF8575_CHIP_COUNT; ++chip) {
         g_stable[chip] = 0xFFFF;
         g_prev[chip] = 0xFFFF;
-        g_shadow[chip] = 0xFFFF; /* every pin released, LEDs dark */
+        /* Matches the chip's own power-on state: every pin written high. With
+         * active-low LEDs that is dark; with active-high ones they are lit
+         * until the first write, which the self test does. */
+        g_shadow[chip] = 0xFFFF;
     }
 
     g_events = xQueueCreate(queue_depth, sizeof(Pcf8575Msg));
@@ -175,9 +178,11 @@ uint16_t pcf8575_toggles(void) {
 }
 
 int pcf8575_set_leds(uint16_t state, TickType_t wait) {
-    /* Input pins must stay written high, and an LED lights when its pin is
-     * driven low, so the requested bits are inverted into the shadow. */
-    const uint16_t word = (uint16_t)((0xFFFFu & ~PCF8575_LED_MASK) | (~state & PCF8575_LED_MASK));
+    /* Input pins must stay written high. The LED bits are driven at whatever
+     * level PCF8575_LED_ACTIVE_LOW says lights the lamp. */
+    const uint16_t lit = (uint16_t)(state & PCF8575_LED_MASK);
+    const uint16_t drive = PCF8575_LED_ACTIVE_LOW ? (uint16_t)(~lit & PCF8575_LED_MASK) : lit;
+    const uint16_t word = (uint16_t)((0xFFFFu & ~PCF8575_LED_MASK) | drive);
     const int rc = pcf8575_write_port(kAddr[PCF8575_LED_CHIP], word, wait);
     if (rc < 0) {
         return rc;
@@ -192,8 +197,10 @@ int pcf8575_led(uint8_t index, bool on, TickType_t wait) {
         return I2C_ERR_ARG;
     }
 
-    /* Shadow holds drive levels, so a lit LED is a cleared bit. */
-    uint16_t state = (uint16_t)(~g_shadow[PCF8575_LED_CHIP] & PCF8575_LED_MASK);
+    /* Shadow holds drive levels, which are inverted from "lit" when the LEDs
+     * are active low. */
+    const uint16_t drive = (uint16_t)(g_shadow[PCF8575_LED_CHIP] & PCF8575_LED_MASK);
+    uint16_t state = PCF8575_LED_ACTIVE_LOW ? (uint16_t)(~drive & PCF8575_LED_MASK) : drive;
     if (on) {
         state |= bit;
     } else {

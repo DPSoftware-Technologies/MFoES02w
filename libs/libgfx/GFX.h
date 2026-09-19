@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <vector>
 
 #ifdef GFXSDL
 // Libraries must not hijack the user's main() entry point.
@@ -337,6 +338,40 @@ public:
 
     void swapBuffers(bool autoclear = true);
 
+    // ===== DISPLAY REALISM EFFECTS ===========================================
+    // Simulate real-panel bring-up quirks. All fields default to "off"/neutral
+    // and only affect what gets *presented* — never the caller's draw buffer
+    // or any draw primitive. PWM flicker and glitch post-processing are
+    // implemented for the SDL backend only (see setPanelEffects() doc below);
+    // powerOnWhite and refreshHz work on every backend.
+    struct PanelEffects {
+        bool     powerOnWhite = false; ///< Paint solid white to the screen right
+                                        ///< now (simulates an uninitialized panel
+                                        ///< before the first real frame). One-shot:
+                                        ///< cleared by the next swapBuffers() call.
+        uint16_t refreshHz    = 0;     ///< 0 = uncapped. Else swapBuffers() blocks
+                                        ///< so presents happen no faster than this
+                                        ///< (simulates a slow/cheap panel).
+        uint16_t pwmHz        = 0;     ///< 0 = off. Backlight PWM frequency; below
+                                        ///< ~200 Hz the on/off cycling reads as a
+                                        ///< visible flicker. SDL backend only.
+        uint8_t  pwmDutyPct   = 100;   ///< Backlight duty cycle / brightness, 0-100.
+        uint8_t  glitchPct    = 0;     ///< 0-100: per-frame chance of a brief
+                                        ///< horizontal tearing/corruption glitch
+                                        ///< band. SDL backend only.
+    };
+
+    /**
+     * Configure (or disable) hardware-realism effects. Safe to call at any
+     * time, including before the first frame. If `fx.powerOnWhite` is true
+     * this immediately paints white to whatever is currently on screen
+     * (the SDL window, the mmap'd /dev/fb0, or the DRM front buffer) without
+     * touching the draw buffer — real content reappears on the next
+     * swapBuffers().
+     */
+    void                setPanelEffects(const PanelEffects &fx);
+    const PanelEffects &getPanelEffects() const { return m_fx; }
+
 #ifdef GFXSDL
     // ===== SDL EVENT HANDLING ================================================
 
@@ -494,6 +529,11 @@ protected:
     bool           m_fontSizeMultiplied;
 
     GFXDrawStyle   m_drawStyle; ///< Current draw style (strokeWidth, lineCap, lineJoin, AA)
+
+    // ===== Display realism effects state (see PanelEffects) =================
+    PanelEffects           m_fx;
+    int64_t                m_fxLastPresentMs = 0;  ///< for refreshHz throttling
+    std::vector<uint32_t>  m_fxScratch;            ///< presentation-only scratch (pwm/glitch)
 };
 
 // Backwards-compat alias

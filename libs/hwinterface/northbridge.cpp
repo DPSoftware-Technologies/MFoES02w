@@ -514,6 +514,20 @@ bool PanelState::decode(const Frame& f, PanelState& out) {
     return true;
 }
 
+bool EncoderState::decode(const Frame& f, EncoderState& out) {
+    if (f.type != kTypeEncEvt) return false;
+
+    NbEncoderWire wire{};
+    if (!payload_of(f, wire)) return false;
+
+    out.position = wire.position;
+    out.delta    = wire.delta;
+    out.pressed  = wire.pressed != 0;
+    out.moved    = (wire.flags & NB_ENC_MOVED) != 0;
+    out.button   = (wire.flags & NB_ENC_BUTTON) != 0;
+    return true;
+}
+
 std::unique_ptr<Link> Link::create(Config cfg) {
     return std::make_unique<LinkImpl>(std::move(cfg));
 }

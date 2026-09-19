@@ -56,6 +56,8 @@ inline constexpr uint8_t kTypeGetPanel = NB_CMD_GET_PANEL;
 inline constexpr uint8_t kTypeGetTime  = NB_CMD_GET_TIME;
 inline constexpr uint8_t kTypeSetTime  = NB_CMD_SET_TIME;
 inline constexpr uint8_t kTypeGetInfo  = NB_CMD_GET_INFO;
+inline constexpr uint8_t kTypeEncEvt   = NB_CMD_ENC_EVT;
+inline constexpr uint8_t kTypeGetEnc   = NB_CMD_GET_ENC;
 
 struct Frame {
     uint8_t type  = kTypeIdle;
@@ -73,6 +75,22 @@ struct PanelState {
     uint8_t  toggles = 0;       /* 4 toggle bits, 1 = on */
 
     static bool decode(const Frame& f, PanelState& out);
+};
+
+/* Decoded kTypeEncEvt payload: the rotary encoder on the northbridge.
+ *
+ * `delta` is the movement this event reports, in detents (clicks), positive
+ * clockwise; `position` is the free-running total, sent with every event so a
+ * dropped frame corrects itself on the next one. A button press arrives as its
+ * own event with delta 0 and moved false. */
+struct EncoderState {
+    int32_t position = 0;
+    int8_t  delta    = 0;
+    bool    pressed  = false;   /* button state at the time of the event */
+    bool    moved    = false;   /* delta carries a real rotation          */
+    bool    button   = false;   /* pressed changed in this event          */
+
+    static bool decode(const Frame& f, EncoderState& out);
 };
 
 struct Stats {

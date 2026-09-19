@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import socket
 import struct
 import threading
 import time
@@ -44,6 +45,12 @@ FLAG_ERROR = 0x04
 
 DEFAULT_VID = 0x750C
 DEFAULT_PID = 0x0544
+
+# Local broker (remote_viewer --broker). libusb claims the USB interface
+# exclusively, so only one process can hold the gadget at a time; the broker
+# owns it and relays the identical MUBD framing over loopback.
+DEFAULT_BROKER_HOST = "127.0.0.1"
+DEFAULT_BROKER_PORT = 7311
 
 USB_BUF_SIZE   = 512 * 1024       # 512 KB — matches dwc2 device-side limit
 MAX_FRAME_SIZE = 4 * 1024 * 1024  # 4 MB  — matches usbd.cpp MAX_FRAME_SIZE
@@ -185,6 +192,9 @@ class UsbChannelManager:
         self._ep_out = None
         self._ep_in  = None
 
+        # broker state — a loopback socket carrying the same MUBD framing
+        self._sock   = None
+
         self._channels: Dict[int, UsbChannel] = {}
         self._ch_lock = threading.Lock()
         self._tx_lock = threading.Lock()
@@ -205,6 +215,17 @@ class UsbChannelManager:
         Connect to the device.
         backend: 'usb1' (async multi-transfer), 'pyusb', or None (auto).
         """
+        # Calling this after connect_broker() is a mistake that costs a long,
+        # silent timeout: the broker already owns the USB interface, so
+        # claiming it here can never succeed. Treat it as a no-op rather than
+        # hanging and then tearing down a working transport.
+        if self._running:
+            # Plain ASCII: this prints to a Windows console that is usually on
+            # a legacy code page, where anything else turns into mojibake.
+            print(f"[usb] already connected via '{self._backend}' - "
+                  f"ignoring connect()")
+            return True
+
         if backend is None:
             backend = 'usb1' if _HAVE_USB1 else 'pyusb'
         if backend == 'usb1' and not _HAVE_USB1:
@@ -217,6 +238,54 @@ class UsbChannelManager:
         self._backend = backend
         return (self._connect_usb1(timeout) if backend == 'usb1'
                 else self._connect_pyusb(timeout))
+
+    # ── broker connect ─────────────────────────────────────────────────────────
+    def connect_broker(self, host: str = DEFAULT_BROKER_HOST,
+                       port: int = DEFAULT_BROKER_PORT,
+                       timeout: float = 10.0) -> bool:
+        """
+        Attach through a local broker instead of claiming the USB device.
+
+        libusb claims the interface exclusively, so only one process can hold
+        the gadget: while remote_viewer is running, connect() will fail. Start
+        it with --broker and use this instead. The broker relays the identical
+        MUBD framing over loopback, so everything above the transport —
+        open_channel, send, recv, and the tools built on them — is unchanged.
+        """
+        if self._running:
+            print(f"[broker] already connected via '{self._backend}' - "
+                  f"ignoring connect_broker()")
+            return True
+
+        deadline = time.monotonic() + timeout
+        sock = None
+        while time.monotonic() < deadline:
+            try:
+                sock = socket.create_connection((host, port), timeout=2.0)
+                break
+            except OSError:
+                sock = None
+                time.sleep(0.5)
+
+        if sock is None:
+            print(f"[broker] nothing listening at {host}:{port} - "
+                  f"is remote_viewer running with --broker?")
+            return False
+
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        # Bounded so the rx thread notices _running going false and exits.
+        sock.settimeout(1.0)
+
+        self._sock    = sock
+        self._backend = 'broker'
+        self._running = True
+
+        self._rx_thread = threading.Thread(
+            target=self._rx_loop_broker, name="broker-rx", daemon=True)
+        self._rx_thread.start()
+
+        print(f"[broker] connected to {host}:{port}")
+        return True
 
     # ── usb1 connect ───────────────────────────────────────────────────────────
     def _connect_usb1(self, timeout: float) -> bool:
@@ -361,6 +430,12 @@ class UsbChannelManager:
         if self._dev:
             usb.util.dispose_resources(self._dev)
             self._dev = None
+        if self._sock:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
 
     # ── channel management ─────────────────────────────────────────────────────
     def open_channel(self, channel_id: int = 0) -> UsbChannel:
@@ -385,6 +460,8 @@ class UsbChannelManager:
                   f"use send_large() for payloads > {USB_BUF_SIZE - HEADER_SIZE} B")
             return False
         with self._tx_lock:
+            if self._backend == 'broker':
+                return self._write_broker(frame)
             return (self._write_usb1(frame) if self._backend == 'usb1'
                     else self._write_pyusb(frame))
 
@@ -403,6 +480,36 @@ class UsbChannelManager:
         except usb.core.USBError as e:
             print(f"[usb] send error: {e}")
             return False
+
+    def _write_broker(self, frame: bytes) -> bool:
+        try:
+            self._sock.sendall(frame)
+            return True
+        except OSError as e:
+            print(f"[broker] send error: {e}")
+            return False
+
+    # ── broker RX ──────────────────────────────────────────────────────────────
+    def _rx_loop_broker(self):
+        """
+        Socket bytes go straight into the shared reassembly path: the broker
+        relays the same framing the USB pipe carries, and TCP splits it at
+        arbitrary points just as bulk reads do.
+        """
+        while self._running:
+            try:
+                data = self._sock.recv(USB_BUF_SIZE)
+            except socket.timeout:
+                continue
+            except OSError as e:
+                if self._running:
+                    print(f"[broker] rx error: {e}")
+                break
+            if not data:
+                if self._running:
+                    print("[broker] broker closed the connection")
+                break
+            self._feed_rx(data)
 
     # ── usb1 async RX (primary path) ───────────────────────────────────────────
     def _rx_loop_usb1(self):

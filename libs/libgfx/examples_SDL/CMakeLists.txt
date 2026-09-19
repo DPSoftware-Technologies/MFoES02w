@@ -7,10 +7,11 @@ set(LIBGFX_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../libgfx")
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/.." libgfx_build)
 
 # Define examples in a list
-set(EXAMPLES 
-    example_simple 
-    example_input 
+set(EXAMPLES
+    example_simple
+    example_input
     example_paint
+    example_drawreplay
 )
 
 foreach(EXAMPLE ${EXAMPLES})

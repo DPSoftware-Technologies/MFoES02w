@@ -14,6 +14,8 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#include <chrono>
+#include <thread>
 
 #ifndef _WIN32
 #  include <unistd.h>
@@ -505,7 +507,51 @@ void LinuxGFX::drawRGBBitmap(int16_t x, int16_t y, uint32_t *bitmap, int16_t w, 
     drawRGBBitmap(x, y, (const uint32_t*)bitmap, w, h);
 }
 
+void LinuxGFX::setPanelEffects(const PanelEffects &fx) {
+    m_fx = fx;
+    m_fxLastPresentMs = 0; // don't let a stale timestamp throttle the next frame
+
+    if (!m_fx.powerOnWhite) return;
+
+    // One-shot: paint white to whatever is on screen right now, without
+    // touching the draw buffer. Real content reappears on the next
+    // swapBuffers()/flush.
+#if defined(GFXSDL)
+    if (m_pTexture && m_pRenderer) {
+        std::vector<uint32_t> white((size_t)m_width * (size_t)m_height, GFX_WHITE);
+        SDL_UpdateTexture(m_pTexture, nullptr, white.data(), m_width * sizeof(uint32_t));
+        SDL_RenderCopy(m_pRenderer, m_pTexture, nullptr, nullptr);
+        SDL_RenderPresent(m_pRenderer);
+    }
+#elif defined(GFX_USE_DRM)
+    if (m_drmFd >= 0 && m_drmBufs[m_drmFront].map) {
+        uint32_t *front = (uint32_t*)m_drmBufs[m_drmFront].map;
+        const size_t n = (size_t)m_width * (size_t)m_height;
+        for (size_t i = 0; i < n; i++) front[i] = GFX_WHITE;
+    }
+#else
+    if (m_pFbMem) {
+        uint32_t *p = (uint32_t*)m_pFbMem;
+        const size_t n = (size_t)m_width * (size_t)m_height;
+        for (size_t i = 0; i < n; i++) p[i] = GFX_WHITE;
+    }
+#endif
+}
+
 void LinuxGFX::_flushToFb() {
+    // Refresh-rate cap: block so presents happen no faster than refreshHz
+    // (simulates a slow/cheap panel). Applies to every backend.
+    if (m_fx.refreshHz > 0) {
+        using namespace std::chrono;
+        const int64_t nowMs = (int64_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+        const int64_t intervalMs = 1000 / m_fx.refreshHz;
+        if (m_fxLastPresentMs != 0) {
+            const int64_t waitMs = m_fxLastPresentMs + intervalMs - nowMs;
+            if (waitMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
+        }
+        m_fxLastPresentMs = (int64_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    }
+
 #if defined(GFX_USE_DRM)
     if (m_drmFd < 0 || !m_pBuffer) return;
 
@@ -530,9 +576,51 @@ void LinuxGFX::_flushToFb() {
     m_pBuffer  = (uint32_t*)m_drmBufs[1u - m_drmFront].map;
 #elif defined(GFXSDL)
     if (!m_pTexture || !m_pSurfaceBuffer || !m_pRenderer) return;
+
+    // PWM flicker / glitch: post-process a scratch copy so the persistent
+    // draw buffer (m_pSurfaceBuffer) is never mutated by presentation effects.
+    const uint32_t *present = m_pSurfaceBuffer;
+    if (m_fx.pwmHz > 0 || m_fx.glitchPct > 0) {
+        const size_t n = (size_t)m_width * (size_t)m_height;
+        m_fxScratch.resize(n);
+        memcpy(m_fxScratch.data(), m_pSurfaceBuffer, n * sizeof(uint32_t));
+
+        if (m_fx.pwmHz > 0) {
+            using namespace std::chrono;
+            const int64_t nowMs = (int64_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+            const int64_t periodMs = 1000 / m_fx.pwmHz;
+            const int64_t onMs = periodMs * m_fx.pwmDutyPct / 100;
+            if (periodMs > 0 && (nowMs % periodMs) >= onMs) {
+                // "Backlight off": crush toward black rather than a hard cut,
+                // matching how a PWM-dimmed LCD looks mid-flicker.
+                for (auto &px : m_fxScratch) {
+                    uint8_t r = (uint8_t)(((px >> 16) & 0xFF) / 8);
+                    uint8_t g = (uint8_t)(((px >>  8) & 0xFF) / 8);
+                    uint8_t b = (uint8_t)(( px        & 0xFF) / 8);
+                    px = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+                }
+            }
+        }
+
+        if (m_fx.glitchPct > 0 && m_width > 0 && m_height > 0 &&
+            (rand() % 100) < m_fx.glitchPct) {
+            const int16_t bandH = (int16_t)(2 + (rand() % 12));
+            const int16_t maxY0 = m_height > bandH ? (int16_t)(m_height - bandH) : (int16_t)0;
+            const int16_t y0    = maxY0 > 0 ? (int16_t)(rand() % maxY0) : (int16_t)0;
+            const size_t  shift = (size_t)(rand() % m_width);
+            std::vector<uint32_t> rowTmp((size_t)m_width);
+            for (int16_t y = y0; y < y0 + bandH && y < m_height; y++) {
+                uint32_t *row = m_fxScratch.data() + (size_t)y * m_width;
+                std::rotate_copy(row, row + shift, row + m_width, rowTmp.data());
+                memcpy(row, rowTmp.data(), (size_t)m_width * sizeof(uint32_t));
+            }
+        }
+        present = m_fxScratch.data();
+    }
+
     SDL_SetRenderDrawColor(m_pRenderer, 0, 0, 0, 255);
     SDL_RenderClear(m_pRenderer);
-    SDL_UpdateTexture(m_pTexture, nullptr, m_pSurfaceBuffer, m_width * sizeof(uint32_t));
+    SDL_UpdateTexture(m_pTexture, nullptr, present, m_width * sizeof(uint32_t));
     SDL_RenderCopy(m_pRenderer, m_pTexture, nullptr, nullptr);
     SDL_RenderPresent(m_pRenderer);
 #else

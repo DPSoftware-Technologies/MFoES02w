@@ -80,9 +80,18 @@ bool App::initNorthbridge() {
     /* Runs on the link thread. Hand everything to the main thread rather than
      * touching UI or GFX from here. */
     nb->on_frame([this](const northbridge::Frame& f) {
-        northbridge::PanelState panel;
-        if (!northbridge::PanelState::decode(f, panel)) return;
-        postAction([this, panel]() { nbOnPanelEvent(panel); });
+        if (f.type == northbridge::kTypePanel) {
+            northbridge::PanelState panel;
+            if (!northbridge::PanelState::decode(f, panel)) return;
+            postAction([this, panel]() { nbOnPanelEvent(panel); });
+            return;
+        }
+
+        if (f.type == northbridge::kTypeEncEvt) {
+            northbridge::EncoderState enc;
+            if (!northbridge::EncoderState::decode(f, enc)) return;
+            postAction([this, enc]() { nbOnEncoderEvent(enc); });
+        }
     });
 
     if (!nb->start()) {
@@ -97,9 +106,10 @@ bool App::initNorthbridge() {
     northbridge::Frame reply;
     if (nb->request(northbridge::kTypeGetInfo, nullptr, 0, reply) && northbridge::payload_of(reply, nbInfo)) {
         nbOnline = true;
-        printf("northbridge fw %u.%u.%u proto %u, board %016llx, rtc=%d panel=%d\n", nbInfo.fw_major, nbInfo.fw_minor,
-               nbInfo.fw_patch, nbInfo.proto_version, (unsigned long long)nbInfo.board_id,
-               (nbInfo.features & NB_FEAT_RTC) ? 1 : 0, (nbInfo.features & NB_FEAT_PANEL) ? 1 : 0);
+        printf("northbridge fw %u.%u.%u proto %u, board %016llx, rtc=%d panel=%d enc=%d post=%s\n", nbInfo.fw_major,
+               nbInfo.fw_minor, nbInfo.fw_patch, nbInfo.proto_version, (unsigned long long)nbInfo.board_id,
+               (nbInfo.features & NB_FEAT_RTC) ? 1 : 0, (nbInfo.features & NB_FEAT_PANEL) ? 1 : 0,
+               (nbInfo.features & NB_FEAT_ENCODER) ? 1 : 0, (nbInfo.features & NB_FEAT_POST_OK) ? "pass" : "FAIL");
 
         snprintf(statusMsg, sizeof(statusMsg), "NB fw %u.%u.%u online", nbInfo.fw_major, nbInfo.fw_minor,
                  nbInfo.fw_patch);
@@ -123,6 +133,34 @@ bool App::initNorthbridge() {
     if (nbOnline && nb->request(northbridge::kTypeGetPanel, nullptr, 0, reply)) {
         northbridge::payload_of(reply, nbPanel);
     }
+
+    /* Same for the encoder, so the first turn is measured against a known
+     * position rather than against zero. */
+    if (nbOnline && nb->request(northbridge::kTypeGetEnc, nullptr, 0, reply)) {
+        NbEncoderWire wire{};
+        if (northbridge::payload_of(reply, wire)) {
+            nbEnc.position = wire.position;
+            nbEnc.pressed  = wire.pressed != 0;
+        }
+    }
+
+    /* The firmware's power-on test has already lit the LEDs and left them dark
+     * again. From here they are ours: state them explicitly so what the panel
+     * shows and what nbLeds says cannot disagree. */
+    if (nbOnline) nbSetLeds(0);
+
+    return true;
+}
+
+/* Panel LEDs, bit 0 = first LED. Fire and forget: the firmware sends no reply
+ * to SET_LEDS, so a lost frame is corrected by the next call. */
+bool App::nbSetLeds(uint8_t mask) {
+    if (!nb || !nbOnline) return false;
+
+    mask &= 0x0f;
+    if (!nb->send(northbridge::kTypeLeds, &mask, sizeof(mask))) return false;
+
+    nbLeds = mask;
     return true;
 }
 
@@ -139,6 +177,29 @@ void App::nbOnPanelEvent(const northbridge::PanelState& panel) {
 
     /* Short blip on press, same feedback the touchscreen gives. */
     if (panel.active) {
+        std::thread([this]() { buz.set(1); usleep(15000); buz.set(0); }).detach();
+    }
+
+    /* The northbridge no longer mirrors buttons onto the LEDs by itself, so the
+     * panel lights up only because we drive it. Replace this with whatever the
+     * LEDs should really mean. */
+    nbSetLeds(static_cast<uint8_t>(panel.buttons & 0x0f));
+}
+
+void App::nbOnEncoderEvent(const northbridge::EncoderState& enc) {
+    nbEnc = enc;
+
+    pthread_mutex_lock(&frameMutex);
+    if (enc.button) {
+        snprintf(statusMsg, sizeof(statusMsg), "encoder button %s  (pos %ld)", enc.pressed ? "down" : "up",
+                 (long)enc.position);
+    } else {
+        snprintf(statusMsg, sizeof(statusMsg), "encoder %+d  (pos %ld)", enc.delta, (long)enc.position);
+    }
+    pthread_mutex_unlock(&frameMutex);
+    RRFSYSMSG = true;
+
+    if (enc.button && enc.pressed) {
         std::thread([this]() { buz.set(1); usleep(15000); buz.set(0); }).detach();
     }
 }

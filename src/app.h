@@ -1,6 +1,7 @@
 #pragma once
 
 #include <GFX.h>
+#include <DrawReplay.h>
 #include "hwinterface/gt911.h"
 #include <linfo.h>
 #include <pthread.h>
@@ -9,6 +10,8 @@
 #include <queue>
 #include <memory>
 #include <mutex>
+#include <atomic>
+#include <condition_variable>
 #include <thread>
 #include "uisys/manager.h"
 #include <unistd.h>
@@ -57,7 +60,90 @@ class App {
     private:
         // Hardware init
         LinuxGFX gfx;
+
+        // ===== Remote draw stream ============================================
+        //
+        // Every frame that is drawn locally is drawn a second time into `dr`,
+        // which rasterises nothing and instead records the draw calls as a few
+        // hundred bytes of commands. Those bytes go out over USB so a remote
+        // renderer can reproduce the screen without anyone shipping a 3.5 MB
+        // framebuffer.
+        //
+        // The second pass only runs while a remote is actually attached, so
+        // the panel costs nothing extra when nobody is listening.
+        //
+        // RGB565 bitmaps are masked out of the recording on purpose: the only
+        // one is the incoming DTS video frame, at 1.8 MB per frame, and the
+        // host is the side that sent it in the first place.
+        DrawReplay           dr{SCREEN_W, SCREEN_H};
+        std::vector<uint8_t> drBlob;
+
+        // An unchanged screen produces a byte-identical blob, and render()
+        // publishes on every loop iteration whether or not anything moved.
+        // Sending those repeats is pure wasted bandwidth, so the last blob is
+        // kept and identical ones are dropped. Touched only by the render
+        // thread; drForceResend is how the sender thread asks for a full frame
+        // after a reconnect, when the far end has nothing on screen.
+        std::vector<uint8_t> drLastSent;
+        uint32_t             drFramesSkipped = 0;
+        std::atomic<bool>    drForceResend{true};
+
+        // Safety net for the dedup above. A viewer that attaches, misses the
+        // announcement, or drops a frame would otherwise sit on a stale or
+        // blank window for as long as the screen stays still. Resending an
+        // unchanged frame this often costs about 1 KB and bounds that wait.
+        uint32_t             drLastSentMs = 0;
+        uint32_t             drKeyframeMs = 2000;   // 0 disables
+
+        /// What a single frame needs to paint. Computed once per frame so the
+        /// local pass and the recording pass render identical content — the
+        /// redraw flags are latched here and cleared once, not consumed by
+        /// whichever pass happens to run first.
+        struct RenderPlan {
+            bool clear    = false;
+            bool dts      = false;
+            bool dataIn   = false;
+            bool about    = false;
+            bool sysInfo  = false;
+            bool widgets  = false;
+            bool status   = false;
+            bool any      = false;
+            bool askRedraw = false;
+        };
+
+        RenderPlan planFrame(bool forceRender);
+
+        /// Hand a finished command blob to the sender. Never blocks the render
+        /// loop: the newest frame wins and older ones are dropped.
+        void drPublish(const std::vector<uint8_t>& blob);
+        bool drRemoteAttached() const;
+
 #ifndef DESKTOP
+        // DrawReplay sender. Its own usbd channel, so the outbound draw stream
+        // can never interfere with inbound DTS video (channel 0) or otad
+        // (channel 10). drPending is a one-deep slot: if the sender is still
+        // busy when a new frame arrives the older one is dropped, because for
+        // a display stream only the newest frame is worth sending.
+        UsbdClient              usbdcDR;
+        pthread_t               dr_thread{};
+        bool                    drThreadRunning = false;
+        std::atomic<bool>       drRemoteUp{false};   // set by the sender thread
+        std::vector<uint8_t>    drPending;
+        bool                    drHasPending    = false;
+        std::mutex              drMutex;
+        std::condition_variable drCv;
+        uint32_t                drFramesSent    = 0;
+        uint32_t                drFramesDropped = 0;  // guarded by drMutex
+
+        static void* drThreadFunc(void* arg);
+        void drLoop();
+        bool drStart();
+
+        /// Decode touch records arriving from the viewer and queue them as if
+        /// they had come from the GT911. May contain several records.
+        void drHandleInput(const uint8_t* data, size_t len);
+        uint32_t drTouchesIn = 0;
+
         I2CBus i2c;
         UsbdClient usbdc;
         GT911 touch;
@@ -75,6 +161,8 @@ class App {
         std::unique_ptr<northbridge::Link> nb;
         NbInfoWire  nbInfo{};
         NbPanelWire nbPanel{};
+        northbridge::EncoderState nbEnc{};    // last encoder report
+        uint8_t     nbLeds       = 0;         // panel LEDs we last asked for, bit 0 = LED 1
         bool        nbOnline     = false;
         bool        nbClockFromRtc = false;  // we set the system clock, so do not push it back
         uint32_t    nbLastClockCheck = 0;
@@ -82,6 +170,12 @@ class App {
         bool initNorthbridge();
         void nbService();                    // called from process(), cheap when idle
         void nbOnPanelEvent(const northbridge::PanelState& panel);
+        void nbOnEncoderEvent(const northbridge::EncoderState& enc);
+
+        /* Panel LEDs. The northbridge lights them for its power-on test and
+         * then leaves them alone, so after boot they show only what we set. */
+        bool nbSetLeds(uint8_t mask);
+        uint8_t nbGetLeds() const { return nbLeds; }
         bool nbReadTime(NbTimeWire& out, unsigned timeout_ms = 250, unsigned attempts = 3);
         bool nbAdoptRtcTime();               // RTC -> system clock
         bool nbPushSystemTime();             // system clock -> RTC
@@ -119,9 +213,16 @@ class App {
         void initSidebarBTNs();
 
         // render
-        void renderAbout();
-        void renderDataInInfo();
-        void renderInfo();
+        //
+        // Templated on the target so one body serves both the real display and
+        // the DrawReplay recorder. Binding to the concrete type matters: it
+        // reaches DrawReplay's own overloads, which record one compact command
+        // per call instead of decomposing into spans. Defined in ui.cpp, which
+        // is the only translation unit that instantiates them.
+        template<typename G> void renderAbout(G& g);
+        template<typename G> void renderDataInInfo(G& g);
+        template<typename G> void renderInfo(G& g);
+        template<typename G> void drawFrame(G& g, const RenderPlan& plan);
         void render(bool forceRender=false);
         
         void process();

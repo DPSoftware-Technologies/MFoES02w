@@ -47,6 +47,9 @@ add_executable(northbridge
         src/i2c_bus.cpp
         src/ds3231.cpp
         src/pcf8575.cpp
+        src/encoder.cpp
+        src/buzzer.cpp
+        src/selftest.cpp
         src/dspi.cpp
         src/dspi_cmd.cpp
         src/build_time.cpp)
@@ -74,6 +77,7 @@ target_link_libraries(northbridge
         pico_stdlib
         hardware_i2c
         hardware_spi
+        hardware_pwm
         hardware_dma
         FreeRTOS-Kernel-Heap4)
 
