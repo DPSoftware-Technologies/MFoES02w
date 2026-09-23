@@ -3,8 +3,10 @@
 
 #include "GFX.h"
 
+#ifndef GFX_NC5874      // bare-metal target: provided by nc5874_std.h via GFX.h
 #include <cstdint>
 #include <vector>
+#endif
 
 // =============================================================================
 // DrawReplay — record draw commands, pack them into bytes, replay elsewhere

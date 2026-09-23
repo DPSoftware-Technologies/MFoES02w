@@ -1,11 +1,16 @@
 #ifndef GFX_H
 #define GFX_H
 
+#ifdef GFX_NC5874
+// Bare-metal Nationalchip 5874 set-top box: no C/C++ standard library.
+#include "nc5874_std.h"
+#else
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <vector>
+#endif
 
 #ifdef GFXSDL
 // Libraries must not hijack the user's main() entry point.
@@ -92,8 +97,10 @@ struct GFXInputEvent {
     uint8_t button; ///< SDL button (0=left, 1=middle, 2=right)
 };
 
+#ifndef GFX_NC5874
 /// Callback type for input events: void callback(const GFXInputEvent& event)
 using GFXEventCallback = std::function<void(const GFXInputEvent&)>;
+#endif
 
 // ===== DRAW STYLE ===========================================================
 
@@ -168,6 +175,17 @@ public:
     explicit LinuxGFX(const char *drmdev = "/dev/dri/card0");
 #elif defined(GFXSDL)
     explicit LinuxGFX(const char *title = "GFX Window", uint16_t width = 1024, uint16_t height = 768);
+#elif defined(GFX_NC5874)
+    /**
+     * Nationalchip 5874 set-top-box back-end (bare metal under U-Boot).
+     * Needs the HDMI output already running (U-Boot av_launch). Draws into an
+     * ARGB8888 surface in RAM; swapBuffers() converts it into the SoC's OSD
+     * graphics plane (layer 6, ARGB1555), which the display scaler stretches
+     * to the HDMI output size.
+     * @param width   Surface / OSD width in pixels  (e.g. 1280 or 1920).
+     * @param height  Surface / OSD height in pixels (e.g. 720 or 1080).
+     */
+    explicit LinuxGFX(uint16_t width = 1280, uint16_t height = 720);
 #else
     /**
      * Framebuffer back-end constructor (default).
@@ -498,6 +516,29 @@ protected:
     _DrmBuf  m_drmBufs[2];
     uint8_t  m_drmFront;        ///< index (0 or 1) of the buffer currently on-screen
     bool     m_drmFlipPending;
+#endif
+
+    /// Pixels per row of m_pBuffer (m_pitch is 0 for ARGB8888 canvases).
+    uint32_t _stridePx() const { return m_pitch ? m_pitch / 4u : (uint32_t)m_width; }
+
+#ifdef GFX_NC5874
+    /// Convert an ARGB8888 frame into the ARGB1555 OSD plane. Converts only
+    /// the dirty rectangle unless @p full (or nothing was tracked yet).
+    void _nc5874Present(const uint32_t *src, bool full);
+
+    /// Grow the dirty rectangle (inclusive coordinates, already clipped).
+    void _ncDirty(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
+        if (x0 < m_ncDx0) m_ncDx0 = x0;
+        if (y0 < m_ncDy0) m_ncDy0 = y0;
+        if (x1 > m_ncDx1) m_ncDx1 = x1;
+        if (y1 > m_ncDy1) m_ncDy1 = y1;
+    }
+    void _ncDirtyReset() { m_ncDx0 = m_ncDy0 = 0x7fff; m_ncDx1 = m_ncDy1 = -1; }
+
+    uint32_t *m_ncSurface;      ///< owned ARGB8888 draw surface (heap)
+    uint16_t *m_ncOsd;          ///< OSD plane pixels, uncached (ARGB1555)
+    int16_t   m_ncDx0, m_ncDy0, m_ncDx1, m_ncDy1;  ///< dirty rect since last present
+    bool      m_ncFullDirty;    ///< whole buffer changed (buffer switch/clear)
 #endif
 
 #ifdef GFXSDL

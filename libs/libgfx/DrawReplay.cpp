@@ -1,8 +1,10 @@
 #include "DrawReplay.h"
 
+#ifndef GFX_NC5874      // bare-metal target: provided by nc5874_std.h via GFX.h
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
+#endif
 
 // =============================================================================
 // Local byte-stream helpers

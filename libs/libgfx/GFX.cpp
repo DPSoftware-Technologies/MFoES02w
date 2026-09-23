@@ -5,6 +5,9 @@
 #  define GFX_TRANSPARENT 0x00000000u
 #endif
 
+#ifdef GFX_NC5874
+// Everything libgfx needs from libc/libstdc++ comes from nc5874_std.h (via GFX.h).
+#else
 #include <cstdio>
 #include <cstdarg>
 #include <cstdlib>
@@ -23,8 +26,33 @@
 #  include <sys/mman.h>
 #  include <poll.h>
 #endif
+#endif // GFX_NC5874
 
-#ifdef GFXSDL
+#ifdef GFX_NC5874
+// ---- Nationalchip 5874 OSD hardware (found by reverse engineering) ----------
+//
+// Display mixer 0xbf440000. OSD layer 6 address register 0xbf441028 holds the
+// physical address >> 3 of a region header:
+//   word 0  0x30300001           format / flags
+//   word 1  0x00010001           show flags
+//   word 2  height << 16 | width
+//   word 3  pitch_px << 16 | 0xff (global alpha)
+//   word 4  pixel buffer, uncached CPU address
+//   word 6  header + 0x1c2040    (copied from the stock firmware)
+// Pixel format ARGB1555, bit 15 = opaque. Exact 0x801f (pure blue) is the
+// layer's colour key and shows as transparent, so it is nudged to 0x801e.
+// The OSD scaler (U-Boot's interlaced mode, 0xbf440100 = 0x000e0001) takes
+// 16.16 src/dst ratios; the output size per field is read from 0xbf4400b8.
+#define NC5874_REG(a)            (*(volatile uint32_t *)(a))
+// Scan position: 0xbf47008c counts pixel clocks within the frame and wraps at
+// H_total * V_total (measured: 0..2969999 = 2640 x 1125 for U-Boot's 1080i50).
+// Field 2 of the interlaced frame starts half way.
+#define NC5874_SCANPOS           0xbf47008cu
+#define NC5874_FRAME_CLOCKS      2970000u
+#define NC5874_OSD_HDR_PHYS      0x03000000u
+#define NC5874_OSD_PIX_PHYS      0x03001000u
+#define NC5874_KSEG1(phys)       (0xa0000000u | (phys))
+#elif defined(GFXSDL)
 #include <SDL2/SDL.h>
 #elif defined(GFX_USE_DRM)
 // ---- DRM/KMS UAPI -- raw Linux kernel stable ABI, no libdrm required --------
@@ -101,7 +129,147 @@ struct drm_event_vblank     {
 #  endif
 #endif
 
-#ifdef GFXSDL
+#if defined(GFX_NC5874)
+
+LinuxGFX::LinuxGFX(uint16_t width, uint16_t height)
+    : m_fbFd(-1), m_pFbMem(nullptr), m_fbMemSize(0),
+      m_depth(32),
+      m_bufferCount(1), m_drawBufferIndex(0), m_displayBufferIndex(0),
+      m_multiBufferEnabled(false),
+      m_ncSurface(nullptr), m_ncOsd(nullptr),
+      m_ncDx0(0x7fff), m_ncDy0(0x7fff), m_ncDx1(-1), m_ncDy1(-1), m_ncFullDirty(false),
+      m_pitch(0), m_pBuffer(nullptr),
+      m_width(0), m_height(0),
+      m_cursorX(0), m_cursorY(0),
+      m_textColor(GFX_WHITE), m_textBgColor(GFX_TRANSPARENT),
+      m_textSizeX(1), m_textSizeY(1), m_textRotation(0),
+      m_textWrap(true), m_rotation(0),
+      m_inverted(false), m_inTransaction(false),
+      m_pFont(nullptr), m_fontSizeMultiplied(true)
+{
+    // Output size per field as programmed by U-Boot's HDMI init (1080i: 1920x540).
+    const uint32_t out   = NC5874_REG(0xbf4400b8);
+    const uint32_t dstW  = out & 0xffffu;
+    const uint32_t dstH  = out >> 16;
+    if (dstW < 640 || dstW > 1920 || dstH < 240 || dstH > 1080) {
+        fprintf(stderr, "GFX/NC5874: display not running (0xbf4400b8=%08x); run av_launch first\n", out);
+        return;
+    }
+    if (width < 16 || width > 1920 || height < 16 || height > 1080) {
+        fprintf(stderr, "GFX/NC5874: unsupported size %ux%u\n", width, height);
+        return;
+    }
+
+    const size_t n = (size_t)width * (size_t)height;
+    m_ncSurface = (uint32_t*)calloc(n, sizeof(uint32_t));
+    if (!m_ncSurface) {
+        fprintf(stderr, "GFX/NC5874: cannot allocate %ux%u surface\n", width, height);
+        return;
+    }
+
+    m_width   = (int16_t)width;
+    m_height  = (int16_t)height;
+    m_pitch   = (uint32_t)width * sizeof(uint32_t);
+    m_pBuffer = m_ncSurface;
+    m_ncOsd   = (uint16_t*)NC5874_KSEG1(NC5874_OSD_PIX_PHYS);
+    m_pFbMem  = (uint8_t*)m_ncOsd;
+    m_fbMemSize = n * sizeof(uint16_t);
+
+    // Region header, same layout as the stock firmware's
+    volatile uint32_t *hdr = (volatile uint32_t*)NC5874_KSEG1(NC5874_OSD_HDR_PHYS);
+    for (int i = 0; i < 18; i++) hdr[i] = 0;
+    hdr[0] = 0x30300001u;
+    hdr[1] = 0x00010001u;
+    hdr[2] = ((uint32_t)height << 16) | width;
+    hdr[3] = ((uint32_t)width << 16) | 0xffu;
+    hdr[4] = NC5874_KSEG1(NC5874_OSD_PIX_PHYS);
+    hdr[6] = NC5874_KSEG1(NC5874_OSD_HDR_PHYS + 0x1c2040u);
+
+    for (size_t i = 0; i < n; i++) m_ncOsd[i] = 0;   // start fully transparent
+
+    // OSD scaler, U-Boot's interlaced mode: 16.16 src/dst ratios
+    NC5874_REG(0xbf440100) = 0x000e0001u;
+    NC5874_REG(0xbf440108) = 0x07000000u;
+    NC5874_REG(0xbf44010c) = 0x0fd20000u;
+    NC5874_REG(0xbf440120) = 0x00000021u;
+    NC5874_REG(0xbf440110) = ((uint32_t)width << 16) | dstW;
+    NC5874_REG(0xbf440114) = ((uint32_t)width << 16) / dstW;
+    NC5874_REG(0xbf440128) = ((uint32_t)height << 16) | dstH;
+    NC5874_REG(0xbf44012c) = ((uint32_t)height << 16) / dstH;
+
+    // Layer control / enables (values from the stock firmware)
+    NC5874_REG(0xbf44006c) = 0x00d70111u;
+    NC5874_REG(0xbf440070) = 0x010000ffu;
+    NC5874_REG(0xbf440090) = 0x010000ffu;
+    NC5874_REG(0xbf4400a8) = 0x30000000u;
+    NC5874_REG(0xbf440160) = 0x1e028000u;
+    NC5874_REG(0xbf441034) = 0x9012d0d0u;
+    NC5874_REG(0xbf441028) = NC5874_OSD_HDR_PHYS >> 3;
+    NC5874_REG(0xbf440060) = 0x00000001u;
+    NC5874_REG(0xbf440000) = 0x10001100u;
+
+    _initializeMultiBuffer();
+    fprintf(stderr, "GFX/NC5874: OSD %dx%d ARGB1555 -> output %ux%u per field\n",
+            m_width, m_height, dstW, dstH);
+}
+
+// Wait for the start of the next field (vertical blanking). Returns early if
+// the scan counter is not running, so a stopped display can never hang us.
+static void nc5874WaitVSync () {
+    const uint32_t half = NC5874_FRAME_CLOCKS / 2u;
+    uint32_t prev = NC5874_REG(NC5874_SCANPOS);
+    const uint32_t field = (prev >= half) ? 1u : 0u;
+    const uint32_t t0 = gfx_nc5874_millis();
+
+    for (;;) {
+        const uint32_t now = NC5874_REG(NC5874_SCANPOS);
+        if (((now >= half) ? 1u : 0u) != field || now < prev) return;   // new field
+        prev = now;
+        if (gfx_nc5874_millis() - t0 > 50u) return;                     // not running
+    }
+}
+
+// ARGB8888 -> ARGB1555: alpha < 128 = transparent; 0x801f (colour key) -> 0x801e
+static inline uint32_t nc5874Px (uint32_t p) {
+    if (!(p & 0x80000000u)) return 0;
+    uint32_t c = 0x8000u | ((p >> 9) & 0x7c00u) | ((p >> 6) & 0x03e0u) | ((p >> 3) & 0x001fu);
+    return (c == 0x801fu) ? 0x801eu : c;
+}
+
+void LinuxGFX::_nc5874Present(const uint32_t *src, bool full) {
+    if (!m_ncOsd || !src) return;
+
+    int16_t x0 = m_ncDx0, y0 = m_ncDy0, x1 = m_ncDx1, y1 = m_ncDy1;
+    if (full || m_ncFullDirty) {
+        x0 = 0; y0 = 0; x1 = (int16_t)(m_width - 1); y1 = (int16_t)(m_height - 1);
+    }
+    _ncDirtyReset();
+    m_ncFullDirty = false;
+    if (x1 < x0 || y1 < y0) return;                      // nothing changed
+
+    // One update per field, started in the blanking gap: no tearing, even
+    // motion. A full-screen convert (~40 ms) spans two fields, which is fine.
+    nc5874WaitVSync();
+
+    const uint32_t stride = _stridePx();
+    for (int16_t y = y0; y <= y1; y++) {
+        const uint32_t *s = src + (uint32_t)y * stride;
+        uint16_t *d = m_ncOsd + (uint32_t)y * (uint32_t)m_width;
+        int16_t x = x0;
+        if ((uintptr_t)(d + x) & 2u) {                   // align to a 32-bit store
+            d[x] = (uint16_t)nc5874Px(s[x]);
+            x++;
+        }
+        for (; x + 1 <= x1; x += 2) {                    // two pixels per 32-bit store
+            *(uint32_t*)(d + x) = nc5874Px(s[x]) | (nc5874Px(s[x + 1]) << 16);
+        }
+        if (x == x1) {
+            d[x] = (uint16_t)nc5874Px(s[x]);
+        }
+    }
+}
+
+#elif defined(GFXSDL)
 
 LinuxGFX::LinuxGFX(const char *title, uint16_t width, uint16_t height)
     : m_fbFd(-1), m_pFbMem(nullptr), m_fbMemSize(0),
@@ -449,6 +617,13 @@ void LinuxGFX::stop() {
         }
     }
     close(m_drmFd); m_drmFd = -1;
+#elif defined(GFX_NC5874)
+    // The OSD keeps showing its last frame; only the RAM surface is released.
+    if (m_ncSurface) {
+        if (m_pBuffer == m_ncSurface) m_pBuffer = nullptr;
+        free(m_ncSurface);
+        m_ncSurface = nullptr;
+    }
 #elif defined(GFXSDL)
     // Only the object that created a window owns the SDL backend. A GFXcanvas has
     // m_pWindow == nullptr and must not destroy resources or call SDL_Quit()
@@ -477,6 +652,9 @@ LinuxGFX::~LinuxGFX() {
 void LinuxGFX::setPixel(int16_t x, int16_t y, uint32_t color) {
     if (x < 0 || x >= m_width || y < 0 || y >= m_height || !m_pBuffer) return;
     m_pBuffer[(uint32_t)y * (m_pitch / 4) + (uint32_t)x] = color;
+#ifdef GFX_NC5874
+    _ncDirty(x, y, x, y);
+#endif
 }
 
 uint32_t LinuxGFX::getPixel(int16_t x, int16_t y) const {
@@ -516,7 +694,12 @@ void LinuxGFX::setPanelEffects(const PanelEffects &fx) {
     // One-shot: paint white to whatever is on screen right now, without
     // touching the draw buffer. Real content reappears on the next
     // swapBuffers()/flush.
-#if defined(GFXSDL)
+#if defined(GFX_NC5874)
+    if (m_ncOsd) {
+        const size_t n = (size_t)m_width * (size_t)m_height;
+        for (size_t i = 0; i < n; i++) m_ncOsd[i] = 0xffffu;
+    }
+#elif defined(GFXSDL)
     if (m_pTexture && m_pRenderer) {
         std::vector<uint32_t> white((size_t)m_width * (size_t)m_height, GFX_WHITE);
         SDL_UpdateTexture(m_pTexture, nullptr, white.data(), m_width * sizeof(uint32_t));
@@ -542,6 +725,14 @@ void LinuxGFX::_flushToFb() {
     // Refresh-rate cap: block so presents happen no faster than refreshHz
     // (simulates a slow/cheap panel). Applies to every backend.
     if (m_fx.refreshHz > 0) {
+#ifdef GFX_NC5874
+        const int64_t intervalMs = 1000 / m_fx.refreshHz;
+        if (m_fxLastPresentMs != 0) {
+            while ((int64_t)gfx_nc5874_millis() < m_fxLastPresentMs + intervalMs) {
+            }
+        }
+        m_fxLastPresentMs = (int64_t)gfx_nc5874_millis();
+#else
         using namespace std::chrono;
         const int64_t nowMs = (int64_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
         const int64_t intervalMs = 1000 / m_fx.refreshHz;
@@ -550,9 +741,15 @@ void LinuxGFX::_flushToFb() {
             if (waitMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
         }
         m_fxLastPresentMs = (int64_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+#endif
     }
 
-#if defined(GFX_USE_DRM)
+#if defined(GFX_NC5874)
+    // Single buffer: only the dirty rectangle changed. Multi-buffer: the shown
+    // buffer differs from the last one, so convert all of it.
+    _nc5874Present(m_multiBufferEnabled ? m_buffers[m_displayBufferIndex].pData : m_pBuffer,
+                   m_multiBufferEnabled);
+#elif defined(GFX_USE_DRM)
     if (m_drmFd < 0 || !m_pBuffer) return;
 
     // Wait for any prior flip before issuing a new one
@@ -754,7 +951,9 @@ void LinuxGFX::swapBuffers(bool autoclear) {
     m_buffers[m_drawBufferIndex].bReady = true;
     m_displayBufferIndex = m_drawBufferIndex;
 
-#ifdef GFXSDL
+#if defined(GFX_NC5874)
+    _flushToFb();  // converts the display buffer into the OSD plane
+#elif defined(GFXSDL)
     // Copy back buffer -> front (m_pSurfaceBuffer) then present
     if (m_pSurfaceBuffer && m_buffers[m_displayBufferIndex].pData) {
         memcpy(m_pSurfaceBuffer, m_buffers[m_displayBufferIndex].pData,
@@ -783,8 +982,12 @@ bool LinuxGFX::selectDrawBuffer(uint8_t idx) {
 bool LinuxGFX::selectDisplayBuffer(uint8_t idx) {
     if (!m_multiBufferEnabled || idx >= m_bufferCount) return false;
     m_displayBufferIndex = idx;
+#ifdef GFX_NC5874
+    _nc5874Present(m_buffers[idx].pData, true);
+#else
     if (m_pFbMem)
         memcpy(m_pFbMem, m_buffers[idx].pData, (size_t)m_width * (size_t)m_height * 4);
+#endif
     return true;
 }
 
@@ -798,6 +1001,9 @@ void LinuxGFX::clearBuffer(int8_t idx, uint32_t color) {
     if (idx == -1)       { for (uint8_t i = 0; i < m_bufferCount; i++) clearOne(i); }
     else if (idx == -2)  { clearOne(m_drawBufferIndex); }
     else if ((uint8_t)idx < m_bufferCount) clearOne((uint8_t)idx);
+#ifdef GFX_NC5874
+    m_ncFullDirty = true;       // memset bypassed the dirty-rect tracking
+#endif
 }
 
 uint32_t* LinuxGFX::getBuffer(uint8_t idx) {
@@ -842,8 +1048,29 @@ void LinuxGFX::writePixel(int16_t x, int16_t y, uint32_t color) {
     }
 }
 
+// Span fast paths: when m_pBuffer is a real ARGB8888 surface (fbdev, DRM, SDL,
+// NC5874, ARGB8888 GFXcanvas) clip once and write the row directly instead of
+// one virtual setPixel() call per pixel. Surfaces without m_pBuffer (other
+// canvas formats, DrawReplay recording) keep the per-pixel path.
 void LinuxGFX::writeFastVLine(int16_t x, int16_t y, int16_t h, uint32_t color) {
     if ((color >> 24) == 0) return;
+    if (m_pBuffer) {
+        if (x < 0 || x >= m_width) return;
+        int16_t ys = std::max<int16_t>(0, y);
+        int16_t ye = std::min<int16_t>(m_height, y + h);
+        if (ys >= ye) return;
+        const uint32_t stride = _stridePx();
+        uint32_t *p = m_pBuffer + (uint32_t)ys * stride + (uint32_t)x;
+        if ((color >> 24) == 0xFF) {
+            for (int16_t i = ys; i < ye; i++, p += stride) *p = color;
+        } else {
+            for (int16_t i = ys; i < ye; i++, p += stride) *p = blendARGB(color, *p);
+        }
+#ifdef GFX_NC5874
+        _ncDirty(x, ys, x, (int16_t)(ye - 1));
+#endif
+        return;
+    }
     for (int16_t i = y; i < y + h; i++) writePixel(x, i, color);
 }
 
@@ -852,6 +1079,20 @@ void LinuxGFX::writeFastHLine(int16_t x, int16_t y, int16_t w, uint32_t color) {
     if (y < 0 || y >= m_height) return;
     int16_t xs = std::max<int16_t>(0, x);
     int16_t xe = std::min<int16_t>(m_width, x + w);
+    if (m_pBuffer) {
+        if (xs >= xe) return;
+        uint32_t *p = m_pBuffer + (uint32_t)y * _stridePx() + (uint32_t)xs;
+        const int16_t n = (int16_t)(xe - xs);
+        if ((color >> 24) == 0xFF) {
+            for (int16_t i = 0; i < n; i++) p[i] = color;
+        } else {
+            for (int16_t i = 0; i < n; i++) p[i] = blendARGB(color, p[i]);
+        }
+#ifdef GFX_NC5874
+        _ncDirty(xs, y, (int16_t)(xe - 1), y);
+#endif
+        return;
+    }
     for (int16_t i = xs; i < xe; i++) writePixel(i, y, color);
 }
 
@@ -2027,6 +2268,13 @@ LinuxGFX::LinuxGFX(CanvasTag) noexcept
     }
 #ifdef GFX_USE_DRM
     memset(m_drmBufs, 0, sizeof(m_drmBufs));
+#endif
+#ifdef GFX_NC5874
+    // A canvas owns no OSD plane or surface; stop() must not free anything.
+    m_ncSurface = nullptr;
+    m_ncOsd     = nullptr;
+    _ncDirtyReset();
+    m_ncFullDirty = false;
 #endif
 #ifdef GFXSDL
     // A canvas owns no SDL backend. These MUST be null so ~LinuxGFX/stop() does

@@ -12,6 +12,32 @@ project(libgfx LANGUAGES CXX)
 # ============================================================================
 option(GFX_DRM_SUPPORT "Enable DRM/KMS backend (raw kernel ioctls, no Mesa)" OFF)
 option(GFX_SDL_SUPPORT "Enable SDL2 desktop preview backend" ON)
+option(GFX_NC5874_SUPPORT "Enable Nationalchip 5874 set-top-box OSD backend (bare metal, cross-compile)" OFF)
+
+# ============================================================================
+# Nationalchip 5874 backend — bare metal under U-Boot, no libc/libstdc++/FPU.
+# Cross-compile with mipsel-linux-gnu-g++ (toolchain file) and link a
+# soft-float runtime (compiler-rt builtins built -msoft-float): the toolchain's
+# libgcc float helpers use FPU instructions the MIPS 24KEc does not have.
+# The application provides gfx_nc5874_malloc/free/log/millis and
+# memcpy/memmove/memset/memcmp/strlen/strcmp (see nc5874_std.h).
+# ============================================================================
+if(GFX_NC5874_SUPPORT)
+    add_library(libgfx STATIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/GFX.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/DrawReplay.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/nc5874_std.cpp
+    )
+    target_include_directories(libgfx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_features(libgfx PUBLIC cxx_std_14)
+    target_compile_definitions(libgfx PUBLIC GFX_NC5874)
+    target_compile_options(libgfx PUBLIC
+        -march=mips32r2 -EL -msoft-float -ffreestanding -mno-abicalls -fno-pic -G 0
+        -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit
+        -fno-asynchronous-unwind-tables)
+    message(STATUS "GFX: backend = Nationalchip 5874 OSD (bare metal)")
+    return()
+endif()
 
 # ============================================================================
 # Windows / MinGW64: DRM and framebuffer are Linux-only; SDL2 is required.
